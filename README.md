@@ -17,9 +17,14 @@ of what showed up wasn't even relevant to what I was looking for.
 - **Hard-filters noise** before scoring: no unrelated roles cluttering a
   "Security Engineer" search, no jobs that require a security clearance or
   citizenship you don't have.
+- **Tailors your resume with AI** — Gemini 2.0 Flash reads your LaTeX resume
+  and the job description and proposes a structured diff, Groq (Llama 3.3 70B)
+  applies it to the LaTeX source, and tectonic recompiles it to a PDF. Your
+  original resume is never touched — every run works on a copy.
 - **Helps you apply** — an intent engine tracks where you are in the apply
-  flow per job (draft → review → applied), and drafts a tailored resume and
-  fit summary you can review before sending.
+  flow per job (draft → review → applied), and drafts a fit summary and
+  keyword-gap diff you can review before sending. Draft prose is generated
+  deterministically by default, with an optional HuggingFace-backed provider.
 - **Runs on a schedule** — APScheduler re-fetches in the background so new
   matches show up without you asking.
 
@@ -43,6 +48,8 @@ connector-by-connector notes.
 - **Scheduling:** APScheduler
 - **Connectors:** Adzuna, JobRight, RemoteOK, The Muse, Remotive, Dice
   (Playwright), LinkedIn (authenticated)
+- **AI:** Gemini 2.0 Flash + Groq (Llama 3.3 70B) for resume tailoring;
+  optional HuggingFace Inference Providers for application-draft prose
 
 ## Getting started
 
