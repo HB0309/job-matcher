@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.env
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# DB
+*.db
+*.sqlite3
+
+# Alembic
+alembic/versions/*.pyc
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.vercel/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Uploads
+uploads/
+resumes/
+
+# Test / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Misc
+*.log
+*_log.txt
+
+# Personal / local artifacts (never commit)
+.obsidian/
+.playwright-mcp/
+.claude/settings.local.json
+gmail_credentials.json
+gmail_token.json
+tailored_resume.pdf
+resume_latex/
+skills-*.png
+
+# Graphify (regenerate with `graphify build --path . --output graphify-out`)
+graphify-out/
+.graphify_python
+
+# One-off verification script output
+backend/*_results.txt
