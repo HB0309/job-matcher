@@ -63,6 +63,13 @@ CONNECTORS = [
         "notes": "RemoteOK public JSON API — remote-only jobs, no auth.",
     },
     {
+        "name": "remotive",
+        "display_name": "Remotive",
+        "enabled": True,
+        "auth_mode": "public",
+        "notes": "Remotive public REST API — remote tech jobs, no auth. HTML-stripped descriptions.",
+    },
+    {
         "name": "linkedin",
         "display_name": "LinkedIn",
         "enabled": True,
