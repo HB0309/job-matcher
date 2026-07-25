@@ -65,3 +65,7 @@ graphify-out/
 
 # One-off verification script output
 backend/*_results.txt
+
+# Runtime stderr redirects and local dev helpers (not for the repo)
+*.err
+/backend/drive_fetch.py
