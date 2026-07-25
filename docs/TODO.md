@@ -223,6 +223,10 @@ Verification
 
 - [x] Unit tests: matcher (29 tests, all passing)
 - [x] Unit tests: normalizer (18 tests, all passing)
+- [x] Fixed normalizer crash: `normalizer.py` `_extract_tags`/tag-merge line called `raw.metadata.get("tags")` and raised `AttributeError` when a connector emitted `metadata=None`; now uses `(raw.metadata or {}).get("tags")`. This was a real fetch-pipeline crash risk, not just a test gap.
+- [x] Reconciled `matcher.py` `_level_score` test expectations (`test_level_score_adjacent`, `test_level_score_two_apart`) with the documented scoring table in `docs/03-agents-flows.md` ("Level scoring": 0.5 for 1-tier mismatch, 0.0 for 2+ tiers) and the `level_explanation` strings in `routers/jobs.py`. The 0.5-per-tier code was correct; the tests were stale from an earlier 0.3-per-tier formula and have been updated to 0.5/0.0.
+- [x] Added `logging.basicConfig(level=logging.INFO, ...)` to `main.py`. Without it, `logging.getLogger(...).info(...)` calls (including `run_metrics.py`'s funnel + `run_metrics_json` summary) were silently dropped by Python's logging lastResort handler (WARNING-level, stderr-only) since nothing in the app configured a root handler — only `print()`-based logs (e.g. `[security_filter]`) were ever visible. Fetch-run instrumentation now actually reaches stdout.
+- [x] Registered `remotive` in `seed_connectors.py` and added `seed_remotive_targets.py` — the connector (`workers/connectors/remotive.py`) and registry entry (`workers/registry.py`) were fully implemented and wired, but the connector was never inserted into the `connectors` table and had no seed-target script, so it could never be selected for a fetch despite being documented as done.
 - [ ] Unit tests: intent_engine (each rule branch)
 - [ ] Unit tests: application_drafter (deterministic provider output shape)
 - [ ] Integration test for fetch pipeline end-to-end
@@ -243,3 +247,7 @@ Verification
 - [ ] Fix HiringCafe (Cloudflare bypass)
 - [ ] Fix Indeed (find working data source)
 - [ ] Apply orchestration backend (Phase 6)
+
+## Observability
+
+- [x] Pipeline stage metrics (`workers/run_metrics.py`): per-stage counts, drop %, and timings logged at end of each fetch/match run (funnel + `run_metrics_json` line). Read the log after a run to capture relevance/dedup/security-filter rates and throughput.

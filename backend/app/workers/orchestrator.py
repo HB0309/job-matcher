@@ -11,6 +11,7 @@ from app.workers.matcher import extract_domain_keywords, passes_title_filter, sc
 from app.workers.normalizer import normalize
 from app.workers.security_filter import filter_disqualifying_jobs
 from app.workers.registry import get_connector
+from app.workers.run_metrics import StageMetrics
 from app.workers.target_loader import load_enabled_targets
 
 
@@ -65,16 +66,20 @@ def run_fetch_and_match(
     for rt in run_target_map.values():
         db.refresh(rt)
 
+    # Pipeline stage metrics (observation only — does not change behaviour)
+    metrics = StageMetrics()
+
     # 5. Fetch from all targets in parallel — pure HTTP, no DB access in threads
     fetch_results: dict[str, tuple[list[RawJobPosting], Exception | None]] = {}
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        future_to_target = {pool.submit(_fetch_one, t, query): t for t in targets}
-        for future in as_completed(future_to_target):
-            target = future_to_target[future]
-            try:
-                fetch_results[target.id] = (future.result(), None)
-            except Exception as exc:
-                fetch_results[target.id] = ([], exc)
+    with metrics.timed("fetch"):
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            future_to_target = {pool.submit(_fetch_one, t, query): t for t in targets}
+            for future in as_completed(future_to_target):
+                target = future_to_target[future]
+                try:
+                    fetch_results[target.id] = (future.result(), None)
+                except Exception as exc:
+                    fetch_results[target.id] = ([], exc)
 
     # 8. Apply results sequentially (DB writes are not thread-safe)
     all_raw: list[RawJobPosting] = []
@@ -109,13 +114,17 @@ def run_fetch_and_match(
                 st.last_success_at = datetime.utcnow()
 
     fetch_run.total_jobs_fetched = len(all_raw)
+    metrics.stage("fetched", len(all_raw))
 
     # 9. Normalize
-    normalized = normalize(all_raw)
+    with metrics.timed("normalize"):
+        normalized = normalize(all_raw)
     fetch_run.total_jobs_normalized = len(normalized)
+    metrics.stage("normalized", len(normalized))
 
     # 9b. Drop jobs requiring US security clearance or citizenship
     normalized = filter_disqualifying_jobs(normalized)
+    metrics.stage("after_security", len(normalized))
 
     # 9c. Hard title filter — drop jobs whose title has no domain keyword from preferred_titles
     domain_keywords = extract_domain_keywords(profile.preferred_titles or [])
@@ -126,9 +135,12 @@ def run_fetch_and_match(
         if dropped:
             import logging
             logging.getLogger(__name__).info("[title_filter] dropped %d jobs not matching keywords %s", dropped, domain_keywords)
+    metrics.stage("after_title", len(normalized))
 
     # 10. Deduplicate against DB
-    new_jobs = dedupe(normalized, db, connector_map)
+    with metrics.timed("dedupe"):
+        new_jobs = dedupe(normalized, db, connector_map)
+    metrics.stage("deduped_new", len(new_jobs))
 
     # 11. Persist new job postings
     job_key_to_posting: dict[str, JobPosting] = {}
@@ -157,7 +169,20 @@ def run_fetch_and_match(
     db.flush()
 
     # 12. Score and persist job matches
-    scores = score_jobs(profile, new_jobs)
+    with metrics.timed("score"):
+        scores = score_jobs(profile, new_jobs)
+    # Score distribution — record real stats so the "strong match" cutoff is
+    # data-informed rather than guessed. Strong = overall >= 0.5.
+    overalls = sorted((s.get("overall", 0.0) for s in scores), reverse=True)
+    if overalls:
+        metrics.note("score_max", round(overalls[0], 3))
+        metrics.note("score_avg", round(sum(overalls) / len(overalls), 3))
+        for thr in (0.6, 0.5, 0.4, 0.3):
+            metrics.note(f"matches_ge_{thr}", sum(1 for v in overalls if v >= thr))
+    # strong_matches is a quality note, NOT the funnel terminal: the funnel ends at
+    # deduped_new (the matches actually surfaced), so noise_cut is the honest
+    # fetched->surfaced reduction rather than a score-threshold artifact.
+    metrics.note("strong_matches_ge_0.5", sum(1 for s in scores if s.get("overall", 0) >= 0.5))
     match_count = 0
     for nj, score in zip(new_jobs, scores):
         jp = job_key_to_posting.get(f"{nj.source_target_id}:{nj.external_id}")
@@ -179,6 +204,8 @@ def run_fetch_and_match(
 
     # 13. Finalise fetch run
     fetch_run.total_jobs_matched = match_count
+    # funnel terminal is strong_matches (already recorded); log the whole run
+    metrics.log_summary()  # prints the funnel + drop %s + timings to the logger
     fetch_run.finished_at = datetime.utcnow()
     if not targets:
         fetch_run.status = "no_targets"

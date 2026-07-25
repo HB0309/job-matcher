@@ -65,7 +65,7 @@ def normalize(raw_jobs: list[RawJobPosting]) -> list[NormalizedJob]:
             normalized_level=_detect_level(raw.title, raw.raw_description),
             employment_type=raw.employment_type,
             tags=list(dict.fromkeys(
-                (raw.metadata.get("tags") or []) + _extract_tags(raw.raw_description)
+                ((raw.metadata or {}).get("tags") or []) + _extract_tags(raw.raw_description)
             )),
             metadata_json=raw.metadata,
         ))

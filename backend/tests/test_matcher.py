@@ -96,11 +96,11 @@ def test_level_score_exact():
 
 def test_level_score_adjacent():
     score = _level_score(["senior"], "mid")
-    assert score == pytest.approx(0.7)
+    assert score == pytest.approx(0.5)
 
 def test_level_score_two_apart():
     score = _level_score(["senior"], "junior")
-    assert score == pytest.approx(0.4)
+    assert score == pytest.approx(0.0)
 
 def test_level_score_no_preferred():
     assert _level_score([], "senior") == 0.5
