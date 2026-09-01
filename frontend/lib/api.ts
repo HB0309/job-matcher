@@ -87,6 +87,13 @@ export const api = {
       body: JSON.stringify(req),
     }),
 
+  fetchAllJobs: (connectors: string[], maxResults: number) =>
+    request<FetchJobsResponse[]>("/fetch-jobs/all", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connectors, max_results_per_target: maxResults }),
+    }),
+
   listJobs: (params: {
     profile_id: string;
     min_score?: number;

@@ -41,6 +41,12 @@ class FetchJobsRequest(BaseModel):
     max_results_per_target: int | None = None
 
 
+class FetchAllJobsRequest(BaseModel):
+    connectors: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+    max_results_per_target: int | None = None
+
+
 class FailedTarget(BaseModel):
     target_id: str
     connector: str
@@ -122,6 +128,11 @@ class JobDetail(BaseModel):
     tags: list[str]
     scores: ScoreBreakdown
     score_explanation: ScoreExplanation | None = None
+    # Populated only for postings the Stage 3 agent actually scored (see
+    # docs/03-agents-flows.md §3.2b) — "[agentic] score=0.NN — <rationale>".
+    # None for postings the agentic funnel never reached or that ran before
+    # this feature existed.
+    agentic_explanation: str | None = None
 
     model_config = {"from_attributes": True}
 

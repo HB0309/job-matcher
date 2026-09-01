@@ -119,6 +119,29 @@ Root workflow instructions and Git rules live in `CLAUDE.md`. Planning phases li
 - [x] POST /fetch-jobs
 - [x] GET /tasks/{fetch_run_id} — poll fetch run status
 
+## 7b. Multi-profile fetch (added 2026-08-31)
+
+Runs the pipeline for every profile a user owns in one click instead of once
+per profile. See `docs/02-architecture.md` §3 "Multi-profile fetch" and
+`docs/04-api-contracts.md` §2.1b for the full design.
+
+- [x] `orchestrator.run_fetch_and_match_for_profiles()` — groups profiles by
+      identical `preferred_titles`, fetches each unique group once, dedupes
+      postings once across the whole combined run, then title-filters/scores/
+      agentic-reranks per profile against a `FetchRun` of its own
+- [x] `POST /fetch-jobs/all` — fetches for every profile owned by the
+      authenticated user; existing single-profile `POST /fetch-jobs` untouched
+      (still used by the scheduler)
+- [x] Frontend: "Fetch Jobs" always runs for all profiles; Jobs tab shows one
+      combined list (`CombinedJobItem.matches`) tagged with every profile that
+      matched a posting and its own score; save/apply act on the row's primary
+      (highest-scoring) profile match
+- [x] Verified against live connectors with 3 real profiles: 311 unique
+      `job_postings` produced 350 `job_matches` (some postings matched by all
+      3 profiles from one shared row — no duplicate postings created)
+- [ ] Automated integration test for the grouping/dedupe logic — verification
+      so far is the manual live-connector run above, not a test file
+
 ## 8. Jobs API
 
 - [x] GET /jobs — with filters: profile_id, min_score, connector, target_id, fetch_run_id, limit, offset
@@ -231,6 +254,28 @@ Verification
 - [ ] Unit tests: application_drafter (deterministic provider output shape)
 - [ ] Integration test for fetch pipeline end-to-end
 - [ ] Connector fixture tests
+- [x] Unit tests: embedder (cosine similarity, rerank ordering, missing-embedding handling — 5 tests)
+- [x] Unit tests: agent (no-api-key/empty-shortlist short-circuits, full LangGraph loop via mocked Groq client, max-iterations cap — 4 tests)
+
+## 15b. Agentic matching funnel (added 2026-08-07)
+
+Converts matching from a fixed heuristic-only pipeline into a bounded, genuinely
+agentic system — see `docs/03-agents-flows.md` §3.2b for the full design and
+`docs/02-architecture.md` §6 for how it composes with the existing Stage 1 scorer.
+Motivation: the résumé claimed postings were "ranked... with LLMs", which wasn't
+true of the matching step before this (only tailoring used an LLM) — this closes
+that gap for real, without spending LLM tokens on every fetched posting.
+
+- [x] Migration 008: `profiles.parsed_experience`, `profiles.embedding`, `job_postings.embedding` (all nullable JSON)
+- [x] Stage 0 — `resume_parser.parse_resume_llm()`: one structured Gemini call per resume upload, best-effort, wired into `routers/profiles.py`
+- [x] Stage 1 — reused existing `matcher.score_jobs()` unchanged as the funnel's zero-cost first cut (top 20)
+- [x] Stage 2 — `embedder.py`: `embed_text()` (Gemini `text-embedding-004`), `cosine_similarity()`, `rerank_by_similarity()`; postings embedded once at ingestion (orchestrator persist loop), profile embedded once (lazily if missing); no pgvector, plain JSON float arrays + numpy
+- [x] Stage 3 — `agent.py`: LangGraph `StateGraph` agent (`agent`/`tools` nodes, conditional routing, `MAX_ITERATIONS=3` hard cap) with `score_match`/`draft_bullet`/`search_job_board`/`finish` tools over Groq `llama-3.3-70b-versatile`; writes to `JobMatch.explanation`
+- [x] Wired into `orchestrator.run_fetch_and_match()` via `_run_agentic_stage()` — runs after Stage 1 persist, before FetchRun finalization; every stage degrades gracefully (missing API keys, empty shortlist, agent errors) rather than failing the run
+- [x] `docs/02-architecture.md`, `docs/modules.md`, `docs/03-agents-flows.md` updated to match
+- [ ] **Not yet run against a real DB/live API keys** — this environment has no Docker/Postgres available, so verification so far is unit tests (84 passing, mocked LLM calls) + import/graph-compile checks only. First real run (real resume upload, real fetch, `GEMINI_API_KEY`+`GROQ_API_KEY` set) still needs to happen on a machine with the dev Postgres container up — run `docker start job_matcher_pg`, `alembic upgrade head`, then a normal `/fetch-jobs` call and inspect `JobMatch.explanation` for the `[agentic]`-prefixed rows.
+- [ ] Frontend: `JobDialog` doesn't render `JobMatch.explanation` yet — the agentic rationale is persisted but not surfaced in the UI (tracked under §8 Future evolution "Score explanations in UI" in `docs/02-architecture.md`)
+- [ ] Backfill: existing `job_postings`/`profiles` rows have `embedding=NULL` until they're touched by a new fetch/upload — no backfill migration written; fine since Stage 2 degrades gracefully, but worth a one-off script if re-ranking quality on old data matters later
 
 ## 15. Next recommended tasks
 

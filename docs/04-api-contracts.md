@@ -207,6 +207,57 @@ All endpoints (except `/auth/*`) require a valid Bearer JWT token in the `Author
 
 ---
 
+### 2.1b Trigger fetch & match for all profiles (added 2026-08-31)
+
+**Endpoint:** `POST /fetch-jobs/all`
+
+**Description:** Runs the fetch-and-match pipeline once for every profile owned by the authenticated user. Profiles sharing identical `preferred_titles` are grouped and share one external connector fetch pass — postings are deduped once across the whole combined run so no profile combination ever creates duplicate `job_postings` rows. Each profile still gets its own `FetchRun`, its own title-filter, its own scores, and its own bounded agentic re-rank (see `docs/03-agents-flows.md` §3.2b), exactly as `POST /fetch-jobs` does per-profile — this endpoint just batches that work instead of requiring one call per profile. See `docs/02-architecture.md` §3 "Multi-profile fetch" for the grouping/dedupe mechanics.
+
+**Request**
+```json
+{
+  "connectors": ["remoteok", "themuse", "remotive", "adzuna"],
+  "target_ids": [],
+  "max_results_per_target": 200
+}
+```
+
+Same fields as `POST /fetch-jobs`, minus `profile_id` — it always targets every profile the authenticated user owns.
+
+**Response 200** — array of the same shape as `POST /fetch-jobs`'s response, one entry per profile:
+```json
+[
+  {
+    "fetch_run_id": "uuid",
+    "profile_id": "uuid-1",
+    "connectors": ["adzuna", "remoteok", "remotive", "themuse"],
+    "target_count": 6,
+    "total_jobs_fetched": 249,
+    "total_jobs_normalized": 245,
+    "total_jobs_matched": 25,
+    "failed_targets": [],
+    "status": "partial_success"
+  },
+  {
+    "fetch_run_id": "uuid",
+    "profile_id": "uuid-2",
+    "connectors": ["adzuna", "remoteok", "remotive", "themuse"],
+    "target_count": 6,
+    "total_jobs_fetched": 358,
+    "total_jobs_normalized": 351,
+    "total_jobs_matched": 14,
+    "failed_targets": [],
+    "status": "partial_success"
+  }
+]
+```
+
+`total_jobs_fetched`/`total_jobs_normalized` reflect that profile's own title-group fetch (not a grand total across all groups); `total_jobs_matched` is that profile's own post-title-filter, post-scoring count.
+
+**Errors** — `404` if the user has no profiles, `500` pipeline error
+
+---
+
 ### 2.2 Poll fetch run status
 
 **Endpoint:** `GET /tasks/{fetch_run_id}`
@@ -320,9 +371,12 @@ All endpoints (except `/auth/*`) require a valid Bearer JWT token in the `Author
     "skill_count_profile": 12,
     "level_explanation": "exact level match",
     "location_explanation": "remote (full score)"
-  }
+  },
+  "agentic_explanation": "[agentic] score=0.82 — strong overlap on FastAPI/Postgres, seniority matches new-grad tier\nBuilt a full-stack platform on the exact stack this posting names, including JWT auth and REST API design."
 }
 ```
+
+`agentic_explanation` (added 2026-08-07) — null unless the Stage 3 LangGraph agent actually scored this posting (see `docs/03-agents-flows.md` §3.2b); the agent only scores a bounded shortlist per fetch run, so most postings will have `null` here even on runs where the funnel ran successfully.
 
 **`score_explanation` values**
 

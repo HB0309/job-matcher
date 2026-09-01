@@ -3,7 +3,14 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { auth } from "@/lib/auth";
-import type { FetchJobsResponse, JobListItem, ProfileResponse, SavedJobWithDetails } from "@/types";
+import type {
+  CombinedJobItem,
+  FetchJobsResponse,
+  JobListItem,
+  JobProfileMatch,
+  ProfileResponse,
+  SavedJobWithDetails,
+} from "@/types";
 import AuthGate from "@/components/AuthGate";
 import FetchPanel from "@/components/FetchPanel";
 import JobsList from "@/components/JobsList";
@@ -16,21 +23,67 @@ import SourcesPanel from "@/components/SourcesPanel";
 
 const PROFILE_KEY = "jm_profile_id";
 
+// Merges per-profile job lists into one row per job_id, tagged with every
+// profile that matched it. The primary match (matches[0], highest score)
+// drives the shared score/filter columns so JobsList's existing sort/filter
+// logic keeps working unchanged.
+function mergeJobsAcrossProfiles(
+  entries: { profile: ProfileResponse; jobs: JobListItem[] }[]
+): CombinedJobItem[] {
+  const byId = new Map<string, CombinedJobItem>();
+  for (const { profile, jobs } of entries) {
+    for (const j of jobs) {
+      const match: JobProfileMatch = {
+        profile_id: profile.profile_id,
+        profile_headline: profile.headline,
+        profile_titles: profile.preferred_titles,
+        overall_score: j.overall_score,
+        title_score: j.title_score,
+        skills_score: j.skills_score,
+        level_score: j.level_score,
+        location_score: j.location_score,
+      };
+      const existing = byId.get(j.job_id);
+      if (existing) {
+        existing.matches.push(match);
+      } else {
+        byId.set(j.job_id, { ...j, matches: [match] });
+      }
+    }
+  }
+  const combined = Array.from(byId.values());
+  for (const c of combined) {
+    c.matches.sort((a, b) => b.overall_score - a.overall_score);
+    const primary = c.matches[0];
+    c.overall_score = primary.overall_score;
+    c.title_score = primary.title_score;
+    c.skills_score = primary.skills_score;
+    c.level_score = primary.level_score;
+    c.location_score = primary.location_score;
+  }
+  return combined;
+}
+
 export default function Home() {
   const [profiles, setProfiles] = useState<ProfileResponse[]>([]);
   const [activeProfile, setActiveProfile] = useState<ProfileResponse | null>(null);
   const [showUpload, setShowUpload] = useState(false);
-  const [lastRun, setLastRun] = useState<FetchJobsResponse | null>(null);
-  const [jobs, setJobs] = useState<JobListItem[]>([]);
+  const [lastRuns, setLastRuns] = useState<FetchJobsResponse[]>([]);
+  const [jobs, setJobs] = useState<CombinedJobItem[]>([]);
   const [fetchLoading, setFetchLoading] = useState(false);
   const [allSavedJobs, setAllSavedJobs] = useState<SavedJobWithDetails[]>([]);
   const [activeTab, setActiveTab] = useState<"jobs" | "apply" | "applied">("jobs");
 
-  // Profile-scoped subset — used only for Jobs tab checkboxes
-  const profileSaved = allSavedJobs.filter((s) => s.profile_id === activeProfile?.profile_id);
-  const savedMap = new Map(profileSaved.map((s) => [s.job_id, s]));
-  const savedSet = new Set(profileSaved.filter((s) => s.status === "saved").map((s) => s.job_id));
-  const appliedSet = new Set(profileSaved.filter((s) => s.status === "applied").map((s) => s.job_id));
+  // Keyed by `${profile_id}:${job_id}` since a job row can carry matches
+  // from several profiles — save/apply state must track which profile's
+  // match a given save belongs to, not just the job_id.
+  const savedMap = new Map(allSavedJobs.map((s) => [`${s.profile_id}:${s.job_id}`, s]));
+  const savedSet = new Set(
+    allSavedJobs.filter((s) => s.status === "saved").map((s) => `${s.profile_id}:${s.job_id}`)
+  );
+  const appliedSet = new Set(
+    allSavedJobs.filter((s) => s.status === "applied").map((s) => `${s.profile_id}:${s.job_id}`)
+  );
 
   async function loadAllSavedJobs() {
     try {
@@ -40,22 +93,27 @@ export default function Home() {
     }
   }
 
-  async function toggleSave(jobId: string) {
-    if (!activeProfile) return;
-    const existing = savedMap.get(jobId);
+  async function loadCombinedJobs(list: ProfileResponse[]) {
+    const entries = await Promise.all(
+      list.map((profile) =>
+        api
+          .listJobs({ profile_id: profile.profile_id, limit: 5000 })
+          .then((r) => ({ profile, jobs: r.jobs }))
+          .catch(() => ({ profile, jobs: [] as JobListItem[] }))
+      )
+    );
+    setJobs(mergeJobsAcrossProfiles(entries));
+  }
+
+  // Toggle save under a specific profile's match on this job row (usually
+  // the row's primary/highest-scoring profile).
+  async function toggleSave(jobId: string, profileId: string) {
+    const existing = savedMap.get(`${profileId}:${jobId}`);
     if (existing) {
       await api.deleteSavedJob(existing.id);
     } else {
-      await api.saveJob({ profile_id: activeProfile.profile_id, job_id: jobId });
+      await api.saveJob({ profile_id: profileId, job_id: jobId });
     }
-    await loadAllSavedJobs();
-  }
-
-  // Jobs tab: mark applied by job_id (active profile only)
-  async function markApplied(jobId: string) {
-    const existing = savedMap.get(jobId);
-    if (!existing) return;
-    await api.updateSavedJob(existing.id, { status: "applied" });
     await loadAllSavedJobs();
   }
 
@@ -75,35 +133,27 @@ export default function Home() {
     await loadAllSavedJobs();
   }
 
-  // Load all profiles and restore last-selected on mount
+  // Load all profiles and their combined job matches on mount
   useEffect(() => {
     if (!auth.isLoggedIn()) return;
     api.listProfiles().then((list) => {
       setProfiles(list);
       const savedId = localStorage.getItem(PROFILE_KEY);
       const match = list.find((p) => p.profile_id === savedId) ?? list[0] ?? null;
-      if (match) {
-        setActiveProfile(match);
-        api
-          .listJobs({ profile_id: match.profile_id, limit: 5000 })
-          .then((r) => setJobs(r.jobs))
-          .catch(() => {});
+      setActiveProfile(match);
+      if (list.length > 0) {
+        loadCombinedJobs(list);
       }
       loadAllSavedJobs();
     });
   }, []);
 
+  // Selects which profile is "active" for editing / the schedule panel —
+  // the combined Jobs list itself is not profile-scoped.
   function selectProfile(p: ProfileResponse) {
     setActiveProfile(p);
     localStorage.setItem(PROFILE_KEY, p.profile_id);
-    setLastRun(null);
-    setJobs([]);
-    setActiveTab("jobs");
     setShowUpload(false);
-    api
-      .listJobs({ profile_id: p.profile_id, limit: 5000 })
-      .then((r) => setJobs(r.jobs))
-      .catch(() => {});
   }
 
   async function handleDeleteProfile(p: ProfileResponse) {
@@ -113,15 +163,16 @@ export default function Home() {
     if (activeProfile?.profile_id === p.profile_id) {
       const next = updated[0] ?? null;
       setActiveProfile(next);
-      setJobs([]);
-      setLastRun(null);
       if (next) {
         localStorage.setItem(PROFILE_KEY, next.profile_id);
-        api.listJobs({ profile_id: next.profile_id, limit: 5000 }).then((r) => setJobs(r.jobs)).catch(() => {});
       } else {
         localStorage.removeItem(PROFILE_KEY);
       }
-      setActiveTab("jobs");
+    }
+    if (updated.length > 0) {
+      loadCombinedJobs(updated);
+    } else {
+      setJobs([]);
     }
     loadAllSavedJobs();
   }
@@ -134,25 +185,21 @@ export default function Home() {
   }
 
   function handleProfileCreated(p: ProfileResponse) {
-    setProfiles((prev) => [p, ...prev]);
+    setProfiles((prev) => {
+      const next = [p, ...prev];
+      loadCombinedJobs(next);
+      return next;
+    });
     selectProfile(p);
   }
 
   async function handleFetch(connectors: string[], maxResults: number) {
-    if (!activeProfile) return;
+    if (profiles.length === 0) return;
     setFetchLoading(true);
     try {
-      const run = await api.fetchJobs({
-        profile_id: activeProfile.profile_id,
-        connectors,
-        max_results_per_target: maxResults,
-      });
-      setLastRun(run);
-      const result = await api.listJobs({
-        profile_id: activeProfile.profile_id,
-        limit: 5000,
-      });
-      setJobs(result.jobs);
+      const runs = await api.fetchAllJobs(connectors, maxResults);
+      setLastRuns(runs);
+      await loadCombinedJobs(profiles);
     } finally {
       setFetchLoading(false);
     }
@@ -224,8 +271,8 @@ export default function Home() {
           )}
         </section>
 
-        {/* Step 2: Fetch jobs */}
-        {activeProfile && (
+        {/* Step 2: Fetch jobs — runs for every profile in one click */}
+        {profiles.length > 0 && (
           <section>
             <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
               2 — Fetch Jobs
@@ -233,11 +280,14 @@ export default function Home() {
             <FetchPanel
               onFetch={handleFetch}
               loading={fetchLoading}
-              lastRun={lastRun}
+              lastRuns={lastRuns}
+              profiles={profiles}
             />
-            <div className="mt-3">
-              <SchedulePanel profileId={activeProfile.profile_id} />
-            </div>
+            {activeProfile && (
+              <div className="mt-3">
+                <SchedulePanel profileId={activeProfile.profile_id} />
+              </div>
+            )}
           </section>
         )}
 
@@ -274,11 +324,10 @@ export default function Home() {
             {activeTab === "jobs" && (
               <JobsList
                 jobs={jobs}
-                profileId={activeProfile!.profile_id}
                 savedSet={savedSet}
                 appliedSet={appliedSet}
                 onToggleSave={toggleSave}
-                latestRunId={lastRun?.fetch_run_id ?? null}
+                latestRunIds={lastRuns.map((r) => r.fetch_run_id)}
               />
             )}
             {activeTab === "apply" && (
@@ -298,9 +347,9 @@ export default function Home() {
         )}
 
         {/* Empty state after fetch */}
-        {activeProfile && lastRun && jobs.length === 0 && !fetchLoading && (
+        {lastRuns.length > 0 && jobs.length === 0 && !fetchLoading && (
           <p className="text-sm text-gray-400 text-center py-6">
-            No matching jobs found. Try fetching again or adjusting your profile.
+            No matching jobs found. Try fetching again or adjusting your profiles.
           </p>
         )}
 
