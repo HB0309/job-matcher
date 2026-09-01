@@ -2,7 +2,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -10,7 +10,7 @@ from app.db import get_db
 from app.dependencies import get_current_user
 from app.models import Profile, User
 from app.schemas import ProfileResponse, ProfileUpdateRequest
-from app.workers.resume_parser import parse_resume
+from app.workers.resume_parser import extract_text, parse_resume, parse_resume_llm
 
 router = APIRouter(tags=["profiles"])
 
@@ -74,6 +74,14 @@ def create_profile(
         save_path.unlink(missing_ok=True)
         raise HTTPException(500, f"Resume parsing failed: {exc}") from exc
 
+    # Best-effort LLM enrichment (Stage 0 of agentic matching) — runs once per
+    # upload, never blocks profile creation if it fails (see parse_resume_llm docstring).
+    parsed_experience: dict | None = None
+    try:
+        parsed_experience = parse_resume_llm(extract_text(str(save_path)))
+    except Exception:
+        parsed_experience = None
+
     profile = Profile(
         user_id=current_user.id,
         raw_resume_path=str(save_path),
@@ -82,6 +90,7 @@ def create_profile(
         skills=parsed.skills,
         preferred_titles=titles_list,
         preferred_level=levels_list,
+        parsed_experience=parsed_experience,
     )
     db.add(profile)
     db.commit()
