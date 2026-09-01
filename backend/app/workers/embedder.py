@@ -21,7 +21,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_EMBED_MODEL = "text-embedding-004"
+_EMBED_MODEL = "models/gemini-embedding-001"
 
 
 def embed_text(text: str) -> list[float] | None:

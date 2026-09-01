@@ -114,7 +114,7 @@ Stage 2 (embedder.py, cheap): semantic re-rank via cached embeddings
 Stage 3 (agent.py, bounded LLM cost): LangGraph tool-calling agent over the
   8-posting shortlist ONLY — never the full fetched pool.
   - Tools: score_match(job_id) [reasoned 0-1 score + rationale via Groq
-    llama-3.3-70b-versatile], draft_bullet(job_id) [one-sentence fit
+    openai/gpt-oss-120b], draft_bullet(job_id) [one-sentence fit
     rationale, only after score_match], search_job_board(query) [re-filters
     postings already fetched this run that fell outside the Stage 1 top-20 —
     NOT a new live connector call — lets the agent broaden its view if the

@@ -19,6 +19,14 @@ _BASE = "https://jobright.ai"
 _TIMEOUT = 15
 _PAGE_SIZE = 20
 _MAX_JOBS = 200
+# Hard ceiling on pages fetched per title, independent of the API's reported
+# `totalJobs` (which can be a site-wide count far larger than what's actually
+# reachable/unique for this query — without this bound a title whose pages
+# mostly return already-seen postings can page into the thousands trying to
+# reach `cap` unique results). 25 pages = 500 raw postings scanned per title,
+# comfortably enough to fill a 200-job cap unless the duplicate rate is
+# pathological, in which case bailing out is the right call anyway.
+_MAX_PAGES_PER_TITLE = 25
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -154,7 +162,9 @@ class JobRightConnector:
         for title in titles:
             position = 0
             retried = False
-            while len(postings) < cap:
+            pages_fetched = 0
+            while len(postings) < cap and pages_fetched < _MAX_PAGES_PER_TITLE:
+                pages_fetched += 1
                 try:
                     build_id = _get_build_id()
                     page_data = _fetch_page(build_id, title, position)
@@ -184,6 +194,13 @@ class JobRightConnector:
                 if position >= total:
                     break
                 time.sleep(0.5)
+            else:
+                if len(postings) < cap:
+                    log.warning(
+                        "JobRight: hit %d-page cap for %r before reaching %d results "
+                        "(most pages likely returned already-seen postings)",
+                        _MAX_PAGES_PER_TITLE, title, cap,
+                    )
 
         log.info("JobRight: %d jobs from %d title(s)", len(postings[:cap]), len(titles))
         return postings[:cap]

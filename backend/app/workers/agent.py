@@ -30,7 +30,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 3
-_MODEL = "llama-3.3-70b-versatile"
+_MODEL = "openai/gpt-oss-120b"
 
 _TOOLS = [
     {

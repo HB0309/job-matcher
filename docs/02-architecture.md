@@ -237,8 +237,8 @@ Sort order in `GET /jobs`: `overall_score DESC, job_match.created_at DESC, poste
 - `python-jose[cryptography]>=3.3` — JWT auth
 - `bcrypt>=4.0` — password hashing
 - `apscheduler>=3.10` — background fetch scheduling
-- `groq` — Groq API client (resume tailoring: LaTeX editing via `llama-3.1-8b-instant`; agentic matching Stage 3 via `llama-3.3-70b-versatile`, see `agent.py`; exponential retry backoff on 429)
-- `google-genai` — Gemini API client (resume tailoring: analysis step via Gemini 2.0 Flash; Stage 0 structured resume parsing and Stage 2 embeddings via `text-embedding-004`, see `resume_parser.py`/`embedder.py`)
+- `groq` — Groq API client (resume tailoring: LaTeX editing via `llama-3.1-8b-instant`; agentic matching Stage 3 via `openai/gpt-oss-120b`, see `agent.py`; exponential retry backoff on 429)
+- `google-genai` — Gemini API client (resume tailoring: analysis step via Gemini 2.0 Flash; Stage 0 structured resume parsing and Stage 2 embeddings via `gemini-embedding-001`, see `resume_parser.py`/`embedder.py`)
 - `langgraph>=0.2` — agentic matching Stage 3 tool-calling loop (`agent.py`)
 - `numpy>=1.26` — cosine similarity for Stage 2 embedding re-rank (`embedder.py`); no pgvector/vector DB
 - `tectonic.exe` (bundled at `backend/resume_latex/tectonic.exe`) — self-contained LaTeX compiler for PDF generation

@@ -31,12 +31,20 @@ _TITLE_GENERIC_WORDS = {
 
 
 def extract_domain_keywords(preferred_titles: list[str]) -> set[str]:
-    """Extract meaningful domain keywords from preferred titles (e.g. 'security', 'soc', 'analyst')."""
+    """Extract meaningful domain keywords from preferred titles (e.g. 'security', 'soc', 'analyst').
+
+    Minimum length is 2, not 3+, so short-but-meaningful domain acronyms like
+    "AI"/"ML"/"QA"/"UX" survive — a title list like ["AI Engineer", "AI
+    Developer"] would otherwise strip "engineer"/"developer" as generic and
+    "ai" for being too short, leaving an EMPTY keyword set, which
+    passes_title_filter treats as "match everything" — silently disabling
+    the title filter for exactly the profiles that need it most.
+    """
     keywords: set[str] = set()
     for title in preferred_titles:
         for word in title.lower().split():
             word = re.sub(r"[^a-z]", "", word)
-            if word and len(word) > 2 and word not in _TITLE_GENERIC_WORDS:
+            if word and len(word) >= 2 and word not in _TITLE_GENERIC_WORDS:
                 keywords.add(word)
     return keywords
 
