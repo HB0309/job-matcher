@@ -1,164 +1,327 @@
-"""Unit tests for DeterministicProvider and helper functions.
+"""Covers application_drafter.py: the pure keyword-gap/confidence helpers,
+DeterministicProvider's output shape, provider selection (including the
+HF-token-missing fallback), HuggingFaceProvider's JSON-parse/fallback
+behavior (network mocked, never calls out), and the DB-backed
+generate_draft()/mark_stale_for_profile() entry points."""
+from __future__ import annotations
 
-No DB, no network calls.
-"""
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
+from app.db import Base
+from app.models import (
+    ApplicationDraft,
+    Connector,
+    JobMatch,
+    JobPosting,
+    Profile,
+    SavedJob,
+    SourceTarget,
+    User,
+)
 from app.workers.application_drafter import (
     DeterministicProvider,
+    HuggingFaceProvider,
     _compute_facts,
-    _keyword_gap,
     _confidence_from_match,
     _deterministic_qa,
+    _keyword_gap,
+    _select_provider,
     _structured_resume,
+    generate_draft,
+    mark_stale_for_profile,
 )
 
 
-def _profile(skills=None, titles=None, levels=None, headline="Engineer", years=2):
-    p = MagicMock()
-    p.skills = skills or ["python", "sql", "docker"]
-    p.preferred_titles = titles or ["Software Engineer"]
-    p.preferred_level = levels or ["mid"]
-    p.headline = headline
-    p.years_experience = years
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
+
+
+def test_keyword_gap_matched_and_missing():
+    gap = _keyword_gap(["Python", "AWS", "Docker"], ["python", "kubernetes", "docker"])
+    assert gap["matched"] == ["docker", "python"]
+    assert gap["missing"] == ["kubernetes"]
+
+
+def test_keyword_gap_handles_none_and_blank_entries():
+    gap = _keyword_gap(None, ["  ", "python", None])
+    assert gap["matched"] == []
+    assert gap["missing"] == ["python"]
+
+
+def test_confidence_from_match_uses_overall_score_when_present():
+    match = MagicMock(spec=JobMatch)
+    match.overall_score = 0.6789
+    assert _confidence_from_match(match, {"matched": [], "missing": []}) == 0.6789
+
+
+def test_confidence_from_match_falls_back_to_gap_ratio_when_no_match():
+    gap = {"matched": ["python", "aws"], "missing": ["kubernetes"]}
+    assert _confidence_from_match(None, gap) == round(2 / 3, 4)
+
+
+def test_confidence_from_match_zero_total_gap_is_zero_not_divide_by_zero():
+    assert _confidence_from_match(None, {"matched": [], "missing": []}) == 0.0
+
+
+def test_deterministic_qa_structure():
+    profile = make_profile(preferred_titles=["SWE"], preferred_level=["mid"], years_experience=3)
+    qa = _deterministic_qa(profile)
+    assert qa["work_authorization"] == "Authorized to work in the United States."
+    assert qa["sponsorship"] == "No sponsorship required."
+    assert qa["preferred_titles"] == ["SWE"]
+    assert qa["years_experience"] == 3
+    assert qa["why_this_role"] is None
+
+
+def test_structured_resume_fields_present():
+    profile = make_profile(skills=["python", "go"], headline="Senior Dev", years_experience=5)
+    resume = _structured_resume(profile)
+    assert resume["headline"] == "Senior Dev"
+    assert resume["years_experience"] == 5
+    assert "python" in resume["skills"]
+
+
+# ---------------------------------------------------------------------------
+# DeterministicProvider
+# ---------------------------------------------------------------------------
+
+
+def make_profile(**kwargs):
+    p = MagicMock(spec=Profile)
+    p.headline = "Backend Engineer"
+    p.years_experience = 3
+    p.skills = ["python", "aws"]
+    p.preferred_titles = ["Backend Engineer"]
+    p.preferred_level = ["mid"]
+    for k, v in kwargs.items():
+        setattr(p, k, v)
     return p
 
 
-def _job(tags=None, company="Acme", title="Backend Engineer", location="Remote"):
-    j = MagicMock()
-    j.tags = tags or ["python", "kubernetes", "go"]
-    j.company = company
-    j.title = title
-    j.location = location
-    return j
+def test_deterministic_provider_output_shape_and_score_formatting():
+    facts = _compute_facts(
+        make_profile(),
+        MagicMock(spec=JobPosting, title="Backend Engineer", company="Acme", location="Remote", tags=["python", "kubernetes"]),
+        MagicMock(spec=JobMatch, overall_score=0.823, title_score=1.0, skills_score=0.5, level_score=1.0),
+    )
+    result = DeterministicProvider().generate(make_profile(), MagicMock(spec=SavedJob), MagicMock(spec=JobPosting), facts)
+
+    assert "82%" in result["fit_summary"]
+    assert "Acme" in result["fit_summary"]
+    assert result["keyword_gap_summary"] == facts["keyword_gap_summary"]
+    assert result["tailored_resume_json"] == facts["structured_resume"]
+    assert result["confidence_score"] == facts["confidence_score"]
 
 
-def _match(overall=0.72, title=0.6, skills=0.5, level=0.9):
-    m = MagicMock()
-    m.overall_score = overall
-    m.title_score = title
-    m.skills_score = skills
-    m.level_score = level
-    return m
+def test_deterministic_provider_handles_no_match_and_no_overlap():
+    facts = _compute_facts(
+        make_profile(skills=[]),
+        MagicMock(spec=JobPosting, title="Backend Engineer", company="Acme", location=None, tags=["python"]),
+        None,
+    )
+    result = DeterministicProvider().generate(make_profile(), MagicMock(spec=SavedJob), MagicMock(spec=JobPosting), facts)
+    assert "n/a" in result["fit_summary"]
+    assert "limited overlap" in result["fit_summary"]
 
 
-class TestKeywordGap:
-    def test_intersection_and_missing(self):
-        gap = _keyword_gap(["python", "sql", "docker"], ["python", "kubernetes", "go"])
-        assert "python" in gap["matched"]
-        assert "kubernetes" in gap["missing"]
-        assert "sql" not in gap["missing"]
-
-    def test_empty_profile_skills(self):
-        gap = _keyword_gap([], ["python", "go"])
-        assert gap["matched"] == []
-        assert set(gap["missing"]) == {"python", "go"}
-
-    def test_empty_job_tags(self):
-        gap = _keyword_gap(["python"], [])
-        assert gap["matched"] == []
-        assert gap["missing"] == []
-
-    def test_case_normalisation(self):
-        gap = _keyword_gap(["Python", "SQL"], ["python", "sql"])
-        assert set(gap["matched"]) == {"python", "sql"}
-        assert gap["missing"] == []
-
-    def test_none_inputs(self):
-        gap = _keyword_gap(None, None)
-        assert gap == {"matched": [], "missing": []}
+# ---------------------------------------------------------------------------
+# Provider selection
+# ---------------------------------------------------------------------------
 
 
-class TestConfidenceFromMatch:
-    def test_uses_match_score_when_present(self):
-        gap = {"matched": ["a"], "missing": ["b"]}
-        conf = _confidence_from_match(_match(overall=0.8), gap)
-        assert conf == pytest.approx(0.8, abs=1e-4)
-
-    def test_uses_gap_ratio_when_no_match(self):
-        gap = {"matched": ["a", "b"], "missing": ["c"]}
-        conf = _confidence_from_match(None, gap)
-        assert conf == pytest.approx(2 / 3, abs=1e-3)
-
-    def test_zero_when_no_match_and_empty_gap(self):
-        gap = {"matched": [], "missing": []}
-        conf = _confidence_from_match(None, gap)
-        assert conf == 0.0
+def test_select_provider_defaults_to_deterministic():
+    with patch("app.workers.application_drafter.settings") as mock_settings:
+        mock_settings.drafting_provider = "deterministic"
+        provider = _select_provider()
+    assert isinstance(provider, DeterministicProvider)
 
 
-class TestDeterministicQA:
-    def test_structure(self):
-        qa = _deterministic_qa(_profile(titles=["SWE"], levels=["mid"], years=3))
-        assert qa["work_authorization"] == "Authorized to work in the United States."
-        assert qa["sponsorship"] == "No sponsorship required."
-        assert qa["preferred_titles"] == ["SWE"]
-        assert qa["years_experience"] == 3
-        assert qa["why_this_role"] is None
+def test_select_provider_huggingface_without_token_falls_back():
+    with patch("app.workers.application_drafter.settings") as mock_settings:
+        mock_settings.drafting_provider = "huggingface"
+        mock_settings.hf_api_token = ""
+        provider = _select_provider()
+    assert isinstance(provider, DeterministicProvider)
 
 
-class TestStructuredResume:
-    def test_fields_present(self):
-        p = _profile(skills=["python", "go"], headline="Senior Dev", years=5)
-        r = _structured_resume(p)
-        assert r["headline"] == "Senior Dev"
-        assert r["years_experience"] == 5
-        assert "python" in r["skills"]
+def test_select_provider_huggingface_with_token():
+    with patch("app.workers.application_drafter.settings") as mock_settings:
+        mock_settings.drafting_provider = "huggingface"
+        mock_settings.hf_api_token = "fake-token"
+        mock_settings.hf_model = "some/model"
+        mock_settings.hf_provider = "together"
+        provider = _select_provider()
+    assert isinstance(provider, HuggingFaceProvider)
+    assert provider._token == "fake-token"
 
 
-class TestDeterministicProvider:
-    def _run(self, profile=None, job=None, match=None):
-        p = profile or _profile()
-        j = job or _job()
-        sv = MagicMock()
-        from app.workers.application_drafter import _compute_facts
-        facts = _compute_facts(p, j, match or _match())
-        return DeterministicProvider().generate(p, sv, j, facts)
+# ---------------------------------------------------------------------------
+# HuggingFaceProvider — network mocked, never calls out
+# ---------------------------------------------------------------------------
 
-    def test_fit_summary_contains_company_and_title(self):
-        result = self._run(job=_job(company="Globex", title="Platform Engineer"))
-        assert "Globex" in result["fit_summary"]
-        assert "Platform Engineer" in result["fit_summary"]
 
-    def test_fit_summary_contains_score(self):
-        result = self._run(match=_match(overall=0.72))
-        assert "72%" in result["fit_summary"]
+def _facts():
+    return _compute_facts(
+        make_profile(),
+        MagicMock(spec=JobPosting, title="Backend Engineer", company="Acme", location="Remote", tags=["python"]),
+        None,
+    )
 
-    def test_keyword_gap_keys_present(self):
-        result = self._run()
-        gap = result["keyword_gap_summary"]
-        assert "matched" in gap
-        assert "missing" in gap
 
-    def test_matched_skills_correct(self):
-        p = _profile(skills=["python", "sql"])
-        j = _job(tags=["python", "go"])
-        result = self._run(profile=p, job=j)
-        assert "python" in result["keyword_gap_summary"]["matched"]
-        assert "go" in result["keyword_gap_summary"]["missing"]
+def test_huggingface_provider_uses_llm_output_on_valid_json():
+    provider = HuggingFaceProvider(token="t", model="m", provider="p")
+    fake_client = MagicMock()
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock(message=MagicMock(content='{"fit_summary": "LLM-written summary", "qa_free_text": {"why_this_role": "custom reason"}}'))]
+    fake_client.chat_completion.return_value = fake_response
+    provider._client = fake_client
 
-    def test_tailored_resume_headline(self):
-        p = _profile(headline="Lead Engineer")
-        result = self._run(profile=p)
-        assert result["tailored_resume_json"]["headline"] == "Lead Engineer"
+    facts = _facts()
+    result = provider.generate(make_profile(), MagicMock(spec=SavedJob), MagicMock(spec=JobPosting), facts)
 
-    def test_qa_answers_keys_exist(self):
-        result = self._run()
-        qa = result["qa_answers_json"]
-        assert "work_authorization" in qa
-        assert "why_this_role" in qa
+    assert result["fit_summary"] == "LLM-written summary"
+    assert result["qa_answers_json"]["why_this_role"] == "custom reason"
+    # Unset LLM qa fields keep the deterministic baseline's values, not blanked.
+    assert result["qa_answers_json"]["sponsorship"] == "No sponsorship required."
 
-    def test_confidence_score_is_float(self):
-        result = self._run()
-        assert isinstance(result["confidence_score"], float)
-        assert 0.0 <= result["confidence_score"] <= 1.0
 
-    def test_no_match_fallback_confidence(self):
-        p = _profile(skills=["python", "sql"])
-        j = _job(tags=["python", "kubernetes", "go"])
-        sv = MagicMock()
-        from app.workers.application_drafter import _compute_facts
-        facts = _compute_facts(p, j, None)
-        result = DeterministicProvider().generate(p, sv, j, facts)
-        assert 0.0 <= result["confidence_score"] <= 1.0
+def test_huggingface_provider_falls_back_to_deterministic_on_non_json():
+    provider = HuggingFaceProvider(token="t", model="m", provider="p")
+    fake_client = MagicMock()
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock(message=MagicMock(content="not json at all"))]
+    fake_client.chat_completion.return_value = fake_response
+    provider._client = fake_client
+
+    facts = _facts()
+    baseline = DeterministicProvider().generate(make_profile(), MagicMock(spec=SavedJob), MagicMock(spec=JobPosting), facts)
+    result = provider.generate(make_profile(), MagicMock(spec=SavedJob), MagicMock(spec=JobPosting), facts)
+
+    assert result["fit_summary"] == baseline["fit_summary"]
+    # Two attempts made (both non-JSON) before falling back.
+    assert fake_client.chat_completion.call_count == 2
+
+
+def test_huggingface_provider_falls_back_on_network_exception():
+    provider = HuggingFaceProvider(token="t", model="m", provider="p")
+    fake_client = MagicMock()
+    fake_client.chat_completion.side_effect = RuntimeError("network down")
+    provider._client = fake_client
+
+    facts = _facts()
+    baseline = DeterministicProvider().generate(make_profile(), MagicMock(spec=SavedJob), MagicMock(spec=JobPosting), facts)
+    result = provider.generate(make_profile(), MagicMock(spec=SavedJob), MagicMock(spec=JobPosting), facts)
+
+    assert result == baseline
+
+
+# ---------------------------------------------------------------------------
+# DB-backed: generate_draft() / mark_stale_for_profile()
+# ---------------------------------------------------------------------------
+
+
+def make_db():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine)()
+
+
+def seed(db):
+    user = User(email="t@example.com", password_hash="x")
+    db.add(user)
+    db.flush()
+    profile = Profile(user_id=user.id, headline="Backend Engineer", skills=["python"], preferred_titles=[], preferred_level=[])
+    db.add(profile)
+    db.flush()
+    connector = Connector(name="remoteok", display_name="RemoteOK", enabled=True)
+    db.add(connector)
+    db.flush()
+    target = SourceTarget(connector_id=connector.id, company_name="remoteok", base_url="https://example.com", enabled=True)
+    db.add(target)
+    db.flush()
+    job = JobPosting(
+        connector_id=connector.id, source_target_id=target.id, external_id="j1",
+        title="Backend Engineer", company="Acme", url="https://example.com/j1", tags=["python"],
+    )
+    db.add(job)
+    db.flush()
+    saved = SavedJob(profile_id=profile.id, job_id=job.id, status="saved")
+    db.add(saved)
+    db.commit()
+    return profile, job, saved
+
+
+def test_generate_draft_creates_new_review_pending_draft():
+    db = make_db()
+    profile, job, saved = seed(db)
+
+    with patch("app.workers.application_drafter.settings") as mock_settings:
+        mock_settings.drafting_provider = "deterministic"
+        draft = generate_draft(db, profile=profile, saved_job=saved, job_posting=job)
+
+    assert draft.status == "review_pending"
+    assert draft.tailored_resume_version == 1
+    assert draft.fit_summary is not None
+    assert db.query(ApplicationDraft).count() == 1
+
+
+def test_generate_draft_regenerates_existing_and_bumps_version():
+    db = make_db()
+    profile, job, saved = seed(db)
+
+    with patch("app.workers.application_drafter.settings") as mock_settings:
+        mock_settings.drafting_provider = "deterministic"
+        first = generate_draft(db, profile=profile, saved_job=saved, job_posting=job)
+        first_id = first.id
+        second = generate_draft(db, profile=profile, saved_job=saved, job_posting=job)
+
+    assert second.id == first_id  # updated in place, not a new row
+    assert second.tailored_resume_version == 2
+    assert db.query(ApplicationDraft).count() == 1
+
+
+def test_generate_draft_falls_back_to_deterministic_on_provider_exception():
+    db = make_db()
+    profile, job, saved = seed(db)
+
+    broken_provider = MagicMock()
+    broken_provider.name = "broken"
+    broken_provider.generate.side_effect = RuntimeError("provider blew up")
+
+    with patch("app.workers.application_drafter._select_provider", return_value=broken_provider):
+        draft = generate_draft(db, profile=profile, saved_job=saved, job_posting=job)
+
+    assert draft.status == "review_pending"
+    assert draft.fit_summary is not None  # deterministic fallback still produced real content
+
+
+def test_mark_stale_for_profile_only_flips_review_pending_and_approved():
+    db = make_db()
+    profile, job, saved = seed(db)
+
+    with patch("app.workers.application_drafter.settings") as mock_settings:
+        mock_settings.drafting_provider = "deterministic"
+        generate_draft(db, profile=profile, saved_job=saved, job_posting=job)
+
+    draft = db.query(ApplicationDraft).first()
+    draft.status = "approved"
+    db.commit()
+
+    count = mark_stale_for_profile(db, profile.id, reason="profile_updated")
+    db.refresh(draft)
+
+    assert count == 1
+    assert draft.status == "stale"
+    assert draft.intent_snapshot_json["stale_reason"] == "profile_updated"
+
+
+def test_mark_stale_for_profile_no_matching_drafts_returns_zero():
+    db = make_db()
+    profile, job, saved = seed(db)
+    # No draft generated at all for this profile.
+    assert mark_stale_for_profile(db, profile.id) == 0

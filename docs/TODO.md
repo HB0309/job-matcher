@@ -103,9 +103,9 @@ Root workflow instructions and Git rules live in `CLAUDE.md`. Planning phases li
 - [x] JobRight description assembly from `jobSummary` + `coreResponsibilities` (list) + `requirements` (list); no extra HTTP calls needed
 - [x] LinkedIn connector (linkedin-api Voyager API; email+password; 5-thread detail fetch; missing SourceTarget row added)
 
-### Blocked
-- [~] Hiring Café connector — 403 Cloudflare blocked; connector exists but should not be selected
-- [~] Indeed connector — RSS feed gone; connector stub exists but should not be selected
+### Removed (2026-09-02)
+- [x] Hiring Café connector deleted — Cloudflare-blocked, no realistic bypass worth building
+- [x] Indeed connector deleted — Cloudflare bot blocker, RSS feed also gone
 
 ### Removed (ATS era — superseded)
 - [N/A] Greenhouse connector
@@ -274,10 +274,39 @@ Verification
 - [x] Reconciled `matcher.py` `_level_score` test expectations (`test_level_score_adjacent`, `test_level_score_two_apart`) with the documented scoring table in `docs/03-agents-flows.md` ("Level scoring": 0.5 for 1-tier mismatch, 0.0 for 2+ tiers) and the `level_explanation` strings in `routers/jobs.py`. The 0.5-per-tier code was correct; the tests were stale from an earlier 0.3-per-tier formula and have been updated to 0.5/0.0.
 - [x] Added `logging.basicConfig(level=logging.INFO, ...)` to `main.py`. Without it, `logging.getLogger(...).info(...)` calls (including `run_metrics.py`'s funnel + `run_metrics_json` summary) were silently dropped by Python's logging lastResort handler (WARNING-level, stderr-only) since nothing in the app configured a root handler — only `print()`-based logs (e.g. `[security_filter]`) were ever visible. Fetch-run instrumentation now actually reaches stdout.
 - [x] Registered `remotive` in `seed_connectors.py` and added `seed_remotive_targets.py` — the connector (`workers/connectors/remotive.py`) and registry entry (`workers/registry.py`) were fully implemented and wired, but the connector was never inserted into the `connectors` table and had no seed-target script, so it could never be selected for a fetch despite being documented as done.
-- [ ] Unit tests: intent_engine (each rule branch)
-- [ ] Unit tests: application_drafter (deterministic provider output shape)
-- [ ] Integration test for fetch pipeline end-to-end
-- [ ] Connector fixture tests
+- [x] Unit tests: intent_engine (`tests/test_intent_engine.py`) — every `_classify`
+      branch (no saved job, applied short-circuit, no draft, stale/approved/
+      review_pending/discarded/unexpected draft status), confidence+action
+      mapping for all 5 intents, plus a DB-backed `assess()`/`assess_batch()`
+      smoke test (real SQLite, not mocks) confirming the query wiring
+- [x] Unit tests: application_drafter (`tests/test_application_drafter.py`) —
+      `_keyword_gap`/`_confidence_from_match` pure helpers, `DeterministicProvider`
+      output shape/formatting, `_select_provider` (incl. HF-token-missing
+      fallback), `HuggingFaceProvider` with a mocked `InferenceClient` (valid
+      JSON, non-JSON fallback, network-exception fallback — never calls out),
+      and DB-backed `generate_draft()`/`mark_stale_for_profile()` (create vs.
+      regenerate-and-bump-version, provider-exception fallback). Found and
+      fixed a real bug along the way: `mark_stale_for_profile()` mutated
+      `intent_snapshot_json` in place then reassigned the same dict object —
+      SQLAlchemy's plain (non-`MutableDict`) JSON column silently drops that
+      as a no-op change at flush time, so `stale_reason`/`stale_at` never
+      actually persisted. Fixed by building a genuinely new dict before mutating.
+- [x] Integration test for fetch pipeline end-to-end
+      (`tests/test_orchestrator_pipeline.py`) — real in-memory SQLite (not
+      mocks) exercising `run_fetch_and_match()`'s full fetch → normalize →
+      security filter → title filter → dedupe → persist → score → FetchRun
+      finalization chain: happy path, dedupe-on-refetch, partial_success with
+      one failed target, failed status when every target fails, no_targets,
+      unknown-profile ValueError
+- [x] Connector fixture tests (`tests/test_connectors.py`) — mocked-`httpx`
+      fixtures for the 5 REST-API connectors (remoteok, themuse, remotive,
+      adzuna, jobright): parse-field assertions, missing-field skip, within-
+      batch dedup, fetch-failure degrades to `[]`, Adzuna's missing-credentials
+      `RuntimeError` propagates intentionally (caught per-target by the
+      orchestrator, not swallowed in the connector), and a regression test
+      pinning the JobRight `_MAX_PAGES_PER_TITLE` bound. `dice` (Playwright)
+      and `linkedin` (linkedin-api auth) are NOT covered — meaningful fixtures
+      for those need heavier mocking infrastructure than was in scope here.
 - [x] Unit tests: embedder (cosine similarity, rerank ordering, missing-embedding handling — 5 tests)
 - [x] Unit tests: agent (no-api-key/empty-shortlist short-circuits, full LangGraph loop via mocked Groq client, max-iterations cap — 4 tests)
 
@@ -313,13 +342,16 @@ that gap for real, without spending LLM tokens on every fetched posting.
       characters crashed with `UnicodeEncodeError` on Windows consoles whose
       default stdout encoding can't represent them (surfaced once a real run
       actually reached this code path) — replaced with plain ASCII `-`.
-- [ ] Frontend: `JobDialog` doesn't render `JobMatch.explanation` yet — the agentic rationale is persisted but not surfaced in the UI (tracked under §8 Future evolution "Score explanations in UI" in `docs/02-architecture.md`)
+- [x] Fixed (2026-09-02): Frontend `JobDialog` now renders `JobMatch.explanation`
+      — added `agentic_explanation` to the frontend `JobDetail` type (backend
+      schema already had it, frontend type didn't) and a "AI assessment" card
+      in `JobDialog` (parses the `"[agentic] score=0.NN — <rationale>\n<draft>"`
+      format into a score badge + rationale + draft bullet), shown only when
+      that posting was actually scored by the bounded Stage 3 agent
 - [ ] Backfill: existing `job_postings`/`profiles` rows have `embedding=NULL` until they're touched by a new fetch/upload — no backfill migration written; fine since Stage 2 degrades gracefully, but worth a one-off script if re-ranking quality on old data matters later
 
 ## 15. Next recommended tasks
 
-- [ ] Fix HiringCafe (Cloudflare bypass — try cloudscraper or Playwright stealth)
-- [ ] Fix Indeed (find working data source)
 - [x] Add score explanations in UI ("why 72%?") — skill chips + level/location text under each score bar
 - [x] Improve skill extraction with canonical taxonomy — 200 keywords, 104 aliases (k8s→kubernetes, golang→go, sklearn→scikit-learn, etc.)
 - [ ] HuggingFace provider end-to-end smoke test
@@ -328,8 +360,6 @@ that gap for real, without spending LLM tokens on every fetched posting.
 - [x] Switch tailoring Step 1 to Gemini 2.0 Flash; fallback chain to `gemini-2.0-flash-lite` on quota/404
 - [x] Switch tailoring Step 2 Groq model to `llama-3.1-8b-instant`; max_tokens 4096 → 16384 (fixes LaTeX truncation)
 - [ ] Backfill descriptions for existing Dice/JobRight jobs (write a one-off migration script)
-- [ ] Fix HiringCafe (Cloudflare bypass)
-- [ ] Fix Indeed (find working data source)
 - [ ] Apply orchestration backend (Phase 6)
 
 ## Observability

@@ -398,7 +398,12 @@ def mark_stale_for_profile(db: Session, profile_id: str, *, reason: str | None =
     count = 0
     for d in drafts:
         d.status = "stale"
-        snapshot = d.intent_snapshot_json or {}
+        # Build a genuinely new dict (not mutate-in-place) — SQLAlchemy's plain
+        # (non-Mutable-wrapped) JSON column only detects a change when the
+        # assigned object is a different reference from the one already
+        # tracked; reassigning the same dict after mutating it in place is
+        # silently dropped at flush time.
+        snapshot = dict(d.intent_snapshot_json or {})
         snapshot["stale_reason"] = reason or "profile_updated"
         snapshot["stale_at"] = datetime.now(timezone.utc).isoformat()
         d.intent_snapshot_json = snapshot

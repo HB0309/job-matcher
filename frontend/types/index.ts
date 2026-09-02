@@ -104,6 +104,9 @@ export interface JobDetail extends JobListItem {
   raw_description: string | null;
   scores: ScoreBreakdown;
   score_explanation?: ScoreExplanation | null;
+  // Populated only for postings the agentic Stage 3 LangGraph agent actually
+  // scored (bounded shortlist, not every posting) — "[agentic] score=0.NN — <rationale>".
+  agentic_explanation?: string | null;
 }
 
 export interface ConnectorSummary {
