@@ -29,6 +29,10 @@ dependencies = [
     "google-auth-oauthlib>=1.2",
     "google-auth-httplib2>=0.2",
     "google-api-python-client>=2.120",
+    "google-genai>=0.3",
+    "groq>=0.11",
+    "langgraph>=0.2",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

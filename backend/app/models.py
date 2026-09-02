@@ -3,8 +3,16 @@ from datetime import datetime
 
 import sqlalchemy as sa
 from sqlalchemy import (
-    Boolean, DateTime, Float, ForeignKey, Index, Integer,
-    JSON, String, Text, UniqueConstraint,
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -39,6 +47,13 @@ class Profile(Base):
     skills: Mapped[list | None] = mapped_column(JSON, nullable=True)
     preferred_titles: Mapped[list | None] = mapped_column(JSON, nullable=True)
     preferred_level: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # LLM-structured extraction (Stage 0 of agentic matching): work-experience bullets,
+    # seniority signal, domain keywords — richer than the flat regex-parsed fields above.
+    # Regex fields (headline/years_experience/skills) stay as the fallback if LLM parsing fails.
+    parsed_experience: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Cached embedding vector of the resume/profile text, computed once per upload
+    # (Stage 2 semantic re-rank compares this against each job_postings.embedding).
+    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
@@ -163,6 +178,10 @@ class JobPosting(Base):
     employment_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Cached embedding of the posting description, computed once at ingestion
+    # (Stage 2 of agentic matching) and reused across every future profile match
+    # against this posting — never recomputed per run.
+    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False

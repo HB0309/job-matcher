@@ -58,6 +58,36 @@ User clicks "Fetch Jobs"
 2. **Exact DB match** — `(connector_id, source_target_id, external_id)` already exists → skip
 3. **Cross-source fuzzy fingerprint** — `company|title` fingerprint exists in DB for any connector → skip
 
+### Multi-profile fetch (added 2026-08-31)
+
+`POST /fetch-jobs/all` runs the pipeline above for every profile a user owns in one call, via `orchestrator.run_fetch_and_match_for_profiles()`:
+
+```
+User clicks "Fetch Jobs" (always targets all of the user's profiles)
+  → POST /fetch-jobs/all
+  → orchestrator.py
+      1. Load every profile the user owns
+      2. Load enabled source targets ONCE (shared — targets are global, not profile-scoped)
+      3. Group profiles by tuple(sorted(preferred_titles)) — identical title
+         sets share one external fetch pass
+      4. Per unique group: steps 4-7 of the single-profile flow above
+         (parallel fetch, normalize, security filter) — NOT the title filter,
+         which stays per-profile
+      5. Concatenate every group's normalized batch and call dedupe() ONCE
+         for the whole run — a posting surfaced by two groups' searches only
+         ever gets one JobPosting row
+      6. Persist JobPosting rows once (embeddings computed once each)
+      7. Per profile: apply that profile's own title filter over the full
+         combined pool (not just its own group's slice), score_jobs(),
+         persist JobMatch rows against that profile's own FetchRun, run the
+         bounded agentic re-rank scoped to that profile
+  → GET /jobs?profile_id=... for every profile (frontend, in parallel)
+  → Frontend merges results client-side into one list, each row tagged with
+    every profile that matched it and its own score (CombinedJobItem.matches)
+```
+
+The single-profile `POST /fetch-jobs` and `run_fetch_and_match()` are unchanged and still used by the scheduler.
+
 ## 4. Component breakdown
 
 ### 4.1 Frontend (Next.js — App Router)
@@ -128,7 +158,9 @@ Key pipeline modules:
 - `orchestrator.py` — end-to-end coordinator
 - `normalizer.py` — raw → NormalizedJob; level detection, tag extraction
 - `security_filter.py` — drops clearance/citizenship-required jobs
-- `matcher.py` — `extract_domain_keywords()`, `passes_title_filter()`, `score_jobs()`; weights: skills 35%, level 50%, location 15%
+- `matcher.py` — `extract_domain_keywords()`, `passes_title_filter()`, `score_jobs()`; weights: skills 35%, level 50%, location 15% (agentic funnel Stage 1)
+- `embedder.py` — agentic funnel Stage 2, cached embedding re-rank (see §3.2b)
+- `agent.py` — agentic funnel Stage 3, LangGraph tool-calling agent bounded to a shortlist (see §3.2b)
 - `deduper.py` — 3-pass deduplication
 - `scheduler.py` — APScheduler background thread; loads schedules on startup
 - `resume_tailor.py` — Gemini 2.0 Flash (analysis: resume + JD → structured JSON diff; falls back to `gemini-2.0-flash-lite` on quota/404) → Groq Llama-3.1-8b-instant (LaTeX edit: apply diff to `.tex` source; `max_tokens=16384`; retry backoff on 429) → tectonic (PDF compile); persists `TailoredResume` row
@@ -144,6 +176,8 @@ Managed via Alembic migrations. Current schema: 11 tables (migration 007 adds `t
 
 ### profiles
 - `id` (uuid pk), `user_id` (fk → users), `raw_resume_path`, `headline`, `years_experience`, `skills` (jsonb), `preferred_titles` (jsonb), `preferred_level` (jsonb), `created_at`, `updated_at`
+- `parsed_experience` (jsonb, nullable) — Stage 0 LLM-structured extraction (`experience_bullets`, `seniority`, `domain_keywords`, `skills`); added migration 008, populated best-effort at upload, never required
+- `embedding` (jsonb, nullable) — cached resume embedding vector for Stage 2 semantic re-rank; added migration 008, computed lazily (upload time or first match run) if missing
 
 ### connectors
 - `id` (serial pk), `name` (unique), `display_name`, `enabled`, `auth_mode`, `notes`, `created_at`, `updated_at`
@@ -159,6 +193,7 @@ Managed via Alembic migrations. Current schema: 11 tables (migration 007 adds `t
 
 ### job_postings
 - `id` (uuid pk), `connector_id` (fk), `source_target_id` (fk), `external_id`, `canonical_key`, `title`, `company`, `location`, `url`, `posted_at`, `raw_description`, `normalized_level`, `employment_type`, `tags` (jsonb), `metadata_json` (jsonb), `created_at`, `updated_at`
+- `embedding` (jsonb, nullable) — cached posting embedding for Stage 2 semantic re-rank; added migration 008, computed once at ingestion, reused across every future match against this posting
 
 ### job_matches
 - `id` (uuid pk), `job_id` (fk), `profile_id` (fk), `fetch_run_id` (fk), `overall_score`, `title_score`, `skills_score`, `level_score`, `location_score`, `explanation` (text, nullable), `created_at`
@@ -179,7 +214,7 @@ Managed via Alembic migrations. Current schema: 11 tables (migration 007 adds `t
 
 ## 6. Scoring model
 
-Weights: **skills 35%, level 50%, location 15%**. Title is computed but only used for the hard filter, not weighted.
+Weights: **skills 35%, level 50%, location 15%**. Title is computed but only used for the hard filter, not weighted. This is Stage 1 of the agentic matching funnel (zero LLM cost, runs over every new posting) — see `docs/03-agents-flows.md` §3.2b for Stages 2 (embedding re-rank) and 3 (LangGraph agent, bounded to a shortlist), which add a reasoned LLM score/rationale (`JobMatch.explanation`) on top of the heuristic `overall_score` for the strongest matches only.
 
 Sort order in `GET /jobs`: `overall_score DESC, job_match.created_at DESC, posted_at DESC` — within same score tier, newer fetches appear first.
 
@@ -202,15 +237,17 @@ Sort order in `GET /jobs`: `overall_score DESC, job_match.created_at DESC, poste
 - `python-jose[cryptography]>=3.3` — JWT auth
 - `bcrypt>=4.0` — password hashing
 - `apscheduler>=3.10` — background fetch scheduling
-- `groq` — Groq API client (resume tailoring: LaTeX editing via `llama-3.1-8b-instant`; `max_tokens=16384`; exponential retry backoff on 429)
-- `google-genai` — Gemini API client (resume tailoring: analysis step via Gemini 2.0 Flash)
+- `groq` — Groq API client (resume tailoring: LaTeX editing via `llama-3.1-8b-instant`; agentic matching Stage 3 via `openai/gpt-oss-120b`, see `agent.py`; exponential retry backoff on 429)
+- `google-genai` — Gemini API client (resume tailoring: analysis step via Gemini 2.0 Flash; Stage 0 structured resume parsing and Stage 2 embeddings via `gemini-embedding-001`, see `resume_parser.py`/`embedder.py`)
+- `langgraph>=0.2` — agentic matching Stage 3 tool-calling loop (`agent.py`)
+- `numpy>=1.26` — cosine similarity for Stage 2 embedding re-rank (`embedder.py`); no pgvector/vector DB
 - `tectonic.exe` (bundled at `backend/resume_latex/tectonic.exe`) — self-contained LaTeX compiler for PDF generation
 
 ## 8. Future evolution
 
 - Fix HiringCafe (Cloudflare bypass) and Indeed
-- Score explanations in UI
-- Embeddings/semantic ranking
+- Score explanations in UI (agentic scores now populate `JobMatch.explanation`, see §3.2b — still needs a frontend surface, `JobDialog` currently doesn't render it)
+- ~~Embeddings/semantic ranking~~ — done 2026-08-07, see §3.2b (Stage 2)
 - Multi-user isolation
 - Notifications
 - `apply_runs` table + browser-extension apply flow (Phase 5D/5E)

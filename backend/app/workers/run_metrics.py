@@ -97,7 +97,7 @@ class StageMetrics:
     def log_summary(self) -> dict:
         """Emit a human-readable funnel plus the JSON blob, and return the dict."""
         d = self.as_dict()
-        lines = ["", "── fetch/match funnel " + "─" * 30]
+        lines = ["", "-- fetch/match funnel " + "-" * 30]
         for name in self._order:
             lines.append(f"  {name:<14} {self._counts[name]:>6}")
         lines.append("  " + "-" * 22)
@@ -110,7 +110,7 @@ class StageMetrics:
         lines.append(f"  throughput  {d['jobs_per_second']} jobs/s over {d['total_seconds']}s")
         for stage, secs in d["timings_seconds"].items():
             lines.append(f"  time {stage:<20} {secs:>7}s")
-        lines.append("─" * 52)
+        lines.append("-" * 52)
         log.info("\n".join(lines))
         log.info("run_metrics_json %s", json.dumps(d))
         return d

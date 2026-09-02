@@ -2,15 +2,14 @@
 
 import React, { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { JobDetail, JobListItem, ScoreExplanation } from "@/types";
+import type { CombinedJobItem, JobDetail, ScoreExplanation } from "@/types";
 
 interface Props {
-  jobs: JobListItem[];
-  profileId: string;
+  jobs: CombinedJobItem[];
   savedSet: Set<string>;
   appliedSet: Set<string>;
-  onToggleSave: (jobId: string) => void;
-  latestRunId?: string | null;
+  onToggleSave: (jobId: string, profileId: string) => void;
+  latestRunIds?: string[];
 }
 
 const CONNECTOR_COLORS: Record<string, string> = {
@@ -83,7 +82,7 @@ function JobDialog({
   profileId: string;
   isSaved: boolean;
   isApplied: boolean;
-  onToggleSave: (id: string) => void;
+  onToggleSave: (id: string, profileId: string) => void;
   onClose: () => void;
 }) {
   const [detail, setDetail] = useState<JobDetail | null>(null);
@@ -232,7 +231,7 @@ function JobDialog({
           <div className="flex items-center gap-2">
             {!isApplied && (
               <button
-                onClick={() => onToggleSave(jobId)}
+                onClick={() => onToggleSave(jobId, profileId)}
                 className={`text-xs px-3 py-1.5 rounded border transition-colors ${
                   isSaved
                     ? "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
@@ -269,7 +268,7 @@ const LEVEL_LABELS: Record<string, string> = {
   mid: "Mid", senior: "Senior", staff: "Staff", principal: "Principal",
 };
 
-export default function JobsList({ jobs, profileId, savedSet, appliedSet, onToggleSave, latestRunId }: Props) {
+export default function JobsList({ jobs, savedSet, appliedSet, onToggleSave, latestRunIds }: Props) {
   const [dialogJobId, setDialogJobId] = useState<string | null>(null);
   const [connectorFilter, setConnectorFilter] = useState("all");
   const [maxLevel, setMaxLevel] = useState("all");
@@ -297,7 +296,13 @@ export default function JobsList({ jobs, profileId, savedSet, appliedSet, onTogg
         j.title.toLowerCase().includes(search.toLowerCase()) ||
         j.company.toLowerCase().includes(search.toLowerCase())
     )
-    .filter((j) => !newOnly || !latestRunId || j.fetch_run_id === latestRunId);
+    .filter(
+      (j) =>
+        !newOnly ||
+        !latestRunIds ||
+        latestRunIds.length === 0 ||
+        (j.fetch_run_id != null && latestRunIds.includes(j.fetch_run_id))
+    );
 
   const sorted = [...filtered].sort((a, b) => {
     if (sortBy === "recent") {
@@ -312,6 +317,10 @@ export default function JobsList({ jobs, profileId, savedSet, appliedSet, onTogg
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
   const paginated = sorted.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+
+  const dialogProfileId = dialogJobId
+    ? jobs.find((j) => j.job_id === dialogJobId)?.matches[0]?.profile_id ?? null
+    : null;
 
   return (
     <div className="space-y-3">
@@ -362,7 +371,7 @@ export default function JobsList({ jobs, profileId, savedSet, appliedSet, onTogg
           />
           <span className="w-8">{minScore}%</span>
         </div>
-        {latestRunId && (
+        {!!latestRunIds?.length && (
           <button
             onClick={() => { setNewOnly((v) => !v); setPage(0); }}
             className={`text-xs px-2.5 py-1.5 rounded border font-medium transition-colors ${
@@ -391,6 +400,7 @@ export default function JobsList({ jobs, profileId, savedSet, appliedSet, onTogg
               <th className="text-left px-4 py-3 font-medium text-gray-600">Title</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 hidden md:table-cell">Location</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 w-24">Source</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600">Profiles</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -400,7 +410,10 @@ export default function JobsList({ jobs, profileId, savedSet, appliedSet, onTogg
                 pct >= 70 ? "text-green-700 bg-green-50" :
                 pct >= 40 ? "text-amber-700 bg-amber-50" :
                 "text-red-700 bg-red-50";
-              const isNew = latestRunId && job.fetch_run_id === latestRunId;
+              const isNew =
+                !!latestRunIds?.length && !!job.fetch_run_id && latestRunIds.includes(job.fetch_run_id);
+              const primaryProfileId = job.matches[0].profile_id;
+              const saveKey = `${primaryProfileId}:${job.job_id}`;
 
               return (
                 <tr
@@ -409,13 +422,13 @@ export default function JobsList({ jobs, profileId, savedSet, appliedSet, onTogg
                   className="hover:bg-gray-50 cursor-pointer"
                 >
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                    {appliedSet.has(job.job_id) ? (
+                    {appliedSet.has(saveKey) ? (
                       <span className="text-xs text-gray-400 font-medium">✓</span>
                     ) : (
                       <input
                         type="checkbox"
-                        checked={savedSet.has(job.job_id)}
-                        onChange={() => onToggleSave(job.job_id)}
+                        checked={savedSet.has(saveKey)}
+                        onChange={() => onToggleSave(job.job_id, primaryProfileId)}
                         className="w-4 h-4 accent-blue-600 cursor-pointer"
                       />
                     )}
@@ -437,6 +450,28 @@ export default function JobsList({ jobs, profileId, savedSet, appliedSet, onTogg
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${CONNECTOR_COLORS[job.connector] ?? "bg-gray-100 text-gray-600"}`}>
                       {job.connector}
                     </span>
+                  </td>
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex flex-wrap gap-1">
+                      {job.matches.map((m, i) => {
+                        const label = m.profile_titles.length > 0
+                          ? m.profile_titles.slice(0, 2).join(" / ")
+                          : m.profile_headline ?? "Profile";
+                        return (
+                          <span
+                            key={m.profile_id}
+                            title={m.profile_headline ?? undefined}
+                            className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap ${
+                              i === 0
+                                ? "bg-blue-50 text-blue-700 border border-blue-200"
+                                : "bg-gray-100 text-gray-500"
+                            }`}
+                          >
+                            {label.slice(0, 24)} · {Math.round(m.overall_score * 100)}%
+                          </span>
+                        );
+                      })}
+                    </div>
                   </td>
                 </tr>
               );
@@ -472,12 +507,12 @@ export default function JobsList({ jobs, profileId, savedSet, appliedSet, onTogg
       )}
 
       {/* Job detail dialog */}
-      {dialogJobId && (
+      {dialogJobId && dialogProfileId && (
         <JobDialog
           jobId={dialogJobId}
-          profileId={profileId}
-          isSaved={savedSet.has(dialogJobId)}
-          isApplied={appliedSet.has(dialogJobId)}
+          profileId={dialogProfileId}
+          isSaved={savedSet.has(`${dialogProfileId}:${dialogJobId}`)}
+          isApplied={appliedSet.has(`${dialogProfileId}:${dialogJobId}`)}
           onToggleSave={onToggleSave}
           onClose={() => setDialogJobId(null)}
         />

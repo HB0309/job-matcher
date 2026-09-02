@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { FetchJobsResponse } from "@/types";
+import type { FetchJobsResponse, ProfileResponse } from "@/types";
 
 const CONNECTOR_GROUPS = [
   {
@@ -53,10 +53,11 @@ const DEFAULT_SELECTED = ["themuse", "remoteok", "jobright", "adzuna", "remotive
 interface Props {
   onFetch: (connectors: string[], maxResults: number) => Promise<void>;
   loading: boolean;
-  lastRun: FetchJobsResponse | null;
+  lastRuns: FetchJobsResponse[];
+  profiles: ProfileResponse[];
 }
 
-export default function FetchPanel({ onFetch, loading, lastRun }: Props) {
+export default function FetchPanel({ onFetch, loading, lastRuns, profiles }: Props) {
   const [selected, setSelected] = useState<string[]>(DEFAULT_SELECTED);
   const [maxResults, setMaxResults] = useState(200);
 
@@ -168,13 +169,15 @@ export default function FetchPanel({ onFetch, loading, lastRun }: Props) {
         />
         <button
           onClick={() => onFetch(selected, maxResults)}
-          disabled={loading || selected.length === 0}
+          disabled={loading || selected.length === 0 || profiles.length === 0}
           className="bg-green-600 text-white px-5 py-2 rounded text-sm font-medium hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
         >
           {loading && (
             <span className="animate-spin inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
           )}
-          {loading ? "Fetching…" : `Fetch Jobs (${selected.length} sources)`}
+          {loading
+            ? "Fetching…"
+            : `Fetch Jobs (${selected.length} sources · ${profiles.length} profile${profiles.length === 1 ? "" : "s"})`}
         </button>
       </div>
 
@@ -184,40 +187,55 @@ export default function FetchPanel({ onFetch, loading, lastRun }: Props) {
         </p>
       )}
 
-      {lastRun && (
-        <div className="text-sm text-gray-600 border-t border-gray-100 pt-3 space-y-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-medium text-gray-800">Last run:</span>
-            <span>{lastRun.total_jobs_fetched} fetched</span>
-            <span className="text-gray-300">·</span>
-            <span>{lastRun.total_jobs_matched} matched</span>
-            <span className="text-gray-300">·</span>
-            <span>{lastRun.target_count} targets</span>
-            {lastRun.failed_targets.length > 0 && (
-              <>
-                <span className="text-gray-300">·</span>
-                <span className="text-amber-600">
-                  {lastRun.failed_targets.length} failed
-                </span>
-              </>
-            )}
-            <span
-              className={`px-2 py-0.5 rounded text-xs font-medium ${
-                statusColors[lastRun.status] ?? "bg-gray-100 text-gray-600"
-              }`}
-            >
-              {lastRun.status}
-            </span>
-          </div>
-          {lastRun.failed_targets.length > 0 && (
-            <ul className="text-xs text-red-500 space-y-0.5 pl-2">
-              {lastRun.failed_targets.map((f) => (
-                <li key={f.target_id}>
-                  {f.company_name}: {f.error}
+      {lastRuns.length > 0 && (
+        <div className="text-sm text-gray-600 border-t border-gray-100 pt-3 space-y-2">
+          <span className="font-medium text-gray-800">Last run:</span>
+          <ul className="space-y-1.5">
+            {lastRuns.map((run) => {
+              const profile = profiles.find((p) => p.profile_id === run.profile_id);
+              return (
+                <li key={run.fetch_run_id} className="flex items-center gap-2 flex-wrap">
+                  <span className="text-gray-800 font-medium">
+                    {profile?.headline ?? run.profile_id}:
+                  </span>
+                  <span>{run.total_jobs_fetched} fetched</span>
+                  <span className="text-gray-300">·</span>
+                  <span>{run.total_jobs_matched} matched</span>
+                  {run.failed_targets.length > 0 && (
+                    <>
+                      <span className="text-gray-300">·</span>
+                      <span className="text-amber-600">{run.failed_targets.length} failed</span>
+                    </>
+                  )}
+                  <span
+                    className={`px-2 py-0.5 rounded text-xs font-medium ${
+                      statusColors[run.status] ?? "bg-gray-100 text-gray-600"
+                    }`}
+                  >
+                    {run.status}
+                  </span>
                 </li>
-              ))}
-            </ul>
-          )}
+              );
+            })}
+          </ul>
+          {(() => {
+            const failuresByTarget = new Map<string, { company_name: string; error: string }>();
+            for (const run of lastRuns) {
+              for (const f of run.failed_targets) {
+                failuresByTarget.set(f.target_id, { company_name: f.company_name, error: f.error });
+              }
+            }
+            const failures = [...failuresByTarget.values()];
+            return failures.length > 0 ? (
+              <ul className="text-xs text-red-500 space-y-0.5 pl-2">
+                {failures.map((f) => (
+                  <li key={f.company_name}>
+                    {f.company_name}: {f.error}
+                  </li>
+                ))}
+              </ul>
+            ) : null;
+          })()}
         </div>
       )}
     </div>

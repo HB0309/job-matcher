@@ -60,6 +60,24 @@ export interface JobListItem {
   location_score: number;
 }
 
+export interface JobProfileMatch {
+  profile_id: string;
+  profile_headline: string | null;
+  profile_titles: string[];
+  overall_score: number;
+  title_score: number;
+  skills_score: number;
+  level_score: number;
+  location_score: number;
+}
+
+// A job row merged across every profile that matched it. `matches` is sorted
+// desc by overall_score — matches[0] is the "primary" profile used for
+// save/apply/detail actions on this row.
+export interface CombinedJobItem extends JobListItem {
+  matches: JobProfileMatch[];
+}
+
 export interface JobListResponse {
   profile_id: string;
   jobs: JobListItem[];

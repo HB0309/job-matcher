@@ -3,8 +3,9 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import get_current_user
-from app.models import Connector, JobMatch, JobPosting, Profile
+from app.models import Connector, JobMatch, JobPosting, Profile, User
 from app.schemas import (
+    FetchAllJobsRequest,
     FetchJobsRequest,
     FetchJobsResponse,
     JobDetail,
@@ -13,7 +14,7 @@ from app.schemas import (
     ScoreBreakdown,
     ScoreExplanation,
 )
-from app.workers.orchestrator import run_fetch_and_match
+from app.workers.orchestrator import run_fetch_and_match, run_fetch_and_match_for_profiles
 
 router = APIRouter(tags=["jobs"], dependencies=[Depends(get_current_user)])
 
@@ -87,6 +88,29 @@ def fetch_jobs(request: FetchJobsRequest, db: Session = Depends(get_db)) -> Fetc
         return run_fetch_and_match(
             db=db,
             profile_id=request.profile_id,
+            connectors=request.connectors or None,
+            target_ids=request.target_ids or None,
+            max_results_per_target=request.max_results_per_target,
+        )
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"Fetch failed: {exc}") from exc
+
+
+@router.post("/fetch-jobs/all", response_model=list[FetchJobsResponse], status_code=200)
+def fetch_jobs_all(
+    request: FetchAllJobsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[FetchJobsResponse]:
+    profiles = db.query(Profile).filter(Profile.user_id == current_user.id).all()
+    if not profiles:
+        raise HTTPException(404, "No profiles found for this user")
+    try:
+        return run_fetch_and_match_for_profiles(
+            db=db,
+            profile_ids=[p.id for p in profiles],
             connectors=request.connectors or None,
             target_ids=request.target_ids or None,
             max_results_per_target=request.max_results_per_target,
@@ -199,4 +223,5 @@ def get_job(
             location=jm.location_score,
         ),
         score_explanation=explanation,
+        agentic_explanation=jm.explanation,
     )

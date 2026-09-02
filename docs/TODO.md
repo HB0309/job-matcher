@@ -89,6 +89,14 @@ Root workflow instructions and Git rules live in `CLAUDE.md`. Planning phases li
 - [x] The Muse connector (public REST API; Software Engineering category; level mapping)
 - [x] Adzuna connector (aggregator REST API; ADZUNA_APP_ID + ADZUNA_APP_KEY; 500-char description cap)
 - [x] JobRight connector (Next.js _next/data API; buildId caching with 404 invalidation)
+- [x] Fixed (2026-08-31): `fetch_jobs()`'s per-title pagination loop had no hard
+      page ceiling — only `len(postings) < cap` and the API's own reported
+      `totalJobs`, which could be far larger than what's actually reachable/
+      unique for a query. When most pages returned already-seen postings this
+      ran away (observed: 1400+ pages, minutes of hammering the site, for a
+      "Software Engineer" query that should've capped at ~10 pages). Added
+      `_MAX_PAGES_PER_TITLE = 25` as an independent hard ceiling; logs a
+      warning if hit before reaching `cap`.
 - [x] Remotive connector (public REST API; remote tech jobs; HTML-stripped descriptions)
 - [x] Dice connector (Playwright headless Chromium; stealth flags; DOM extraction via data-testid="job-card"; company from 2nd anchor in company-profile links; location regex City, ST + Remote/Hybrid/On-Site)
 - [x] Dice description fetching via httpx SSR pages (`/job-detail/{guid}`); `[class*="jobDescription"]` selector; capped at 50/run; 1s pause every 10 requests
@@ -113,11 +121,50 @@ Root workflow instructions and Git rules live in `CLAUDE.md`. Planning phases li
 - [x] Normalizer (level detection, skill tag extraction from description)
 - [x] Security filter (clearance/citizenship keyword scan on title + description)
 - [x] Title filter (extract_domain_keywords strips generic words; passes_title_filter whole-word regex)
+- [x] Fixed (2026-08-31): `extract_domain_keywords` required `len(word) > 2`,
+      so a title list like `["AI Engineer", "AI Developer"]` stripped
+      "engineer"/"developer" as generic AND "ai" for being too short, leaving
+      an EMPTY keyword set — which `passes_title_filter` treats as "match
+      everything", silently disabling the filter for exactly the profiles
+      that need it most (observed matching "Jr Creative Strategist" and
+      "Junior UX UI Designer" for an AI Engineer profile). Changed the
+      threshold to `len(word) >= 2` so acronyms like AI/ML/QA/UX survive —
+      all existing 2-letter stopwords were already covered explicitly by
+      `_TITLE_GENERIC_WORDS`, so this doesn't reintroduce noise.
 - [x] Deduper (3-pass: within-batch fingerprint collapse, exact DB match, cross-source fuzzy fingerprint)
 - [x] Matcher (skills 35%, level 50%, location 15%; title is hard filter only, not weighted)
 - [x] FetchRun + FetchRunTarget persistence
 - [x] POST /fetch-jobs
 - [x] GET /tasks/{fetch_run_id} — poll fetch run status
+
+## 7b. Multi-profile fetch (added 2026-08-31)
+
+Runs the pipeline for every profile a user owns in one click instead of once
+per profile. See `docs/02-architecture.md` §3 "Multi-profile fetch" and
+`docs/04-api-contracts.md` §2.1b for the full design.
+
+- [x] `orchestrator.run_fetch_and_match_for_profiles()` — groups profiles by
+      identical `preferred_titles`, fetches each unique group once, dedupes
+      postings once across the whole combined run, then title-filters/scores/
+      agentic-reranks per profile against a `FetchRun` of its own
+- [x] `POST /fetch-jobs/all` — fetches for every profile owned by the
+      authenticated user; existing single-profile `POST /fetch-jobs` untouched
+      (still used by the scheduler)
+- [x] Frontend: "Fetch Jobs" always runs for all profiles; Jobs tab shows one
+      combined list (`CombinedJobItem.matches`) tagged with every profile that
+      matched a posting and its own score; save/apply act on the row's primary
+      (highest-scoring) profile match
+- [x] Verified against live connectors with 3 real profiles: 311 unique
+      `job_postings` produced 350 `job_matches` (some postings matched by all
+      3 profiles from one shared row — no duplicate postings created)
+- [x] Automated integration test (`tests/test_orchestrator_multi_profile.py`,
+      in-memory SQLite, `_fetch_one` + `_run_agentic_stage` monkeypatched):
+      verifies 2 profiles sharing identical `preferred_titles` produce exactly
+      one `_fetch_one` call for their group (not two), a 3rd profile with a
+      different title set gets its own call, exactly one `JobPosting` row is
+      persisted per unique posting, and per-profile title-filtering + own
+      `FetchRun` is correct even though scoring runs over the full combined
+      pool
 
 ## 8. Jobs API
 
@@ -231,6 +278,43 @@ Verification
 - [ ] Unit tests: application_drafter (deterministic provider output shape)
 - [ ] Integration test for fetch pipeline end-to-end
 - [ ] Connector fixture tests
+- [x] Unit tests: embedder (cosine similarity, rerank ordering, missing-embedding handling — 5 tests)
+- [x] Unit tests: agent (no-api-key/empty-shortlist short-circuits, full LangGraph loop via mocked Groq client, max-iterations cap — 4 tests)
+
+## 15b. Agentic matching funnel (added 2026-08-07)
+
+Converts matching from a fixed heuristic-only pipeline into a bounded, genuinely
+agentic system — see `docs/03-agents-flows.md` §3.2b for the full design and
+`docs/02-architecture.md` §6 for how it composes with the existing Stage 1 scorer.
+Motivation: the résumé claimed postings were "ranked... with LLMs", which wasn't
+true of the matching step before this (only tailoring used an LLM) — this closes
+that gap for real, without spending LLM tokens on every fetched posting.
+
+- [x] Migration 008: `profiles.parsed_experience`, `profiles.embedding`, `job_postings.embedding` (all nullable JSON)
+- [x] Stage 0 — `resume_parser.parse_resume_llm()`: one structured Gemini call per resume upload, best-effort, wired into `routers/profiles.py`
+- [x] Stage 1 — reused existing `matcher.score_jobs()` unchanged as the funnel's zero-cost first cut (top 20)
+- [x] Stage 2 — `embedder.py`: `embed_text()` (Gemini `gemini-embedding-001` — see fix note below), `cosine_similarity()`, `rerank_by_similarity()`; postings embedded once at ingestion (orchestrator persist loop), profile embedded once (lazily if missing); no pgvector, plain JSON float arrays + numpy
+- [x] Stage 3 — `agent.py`: LangGraph `StateGraph` agent (`agent`/`tools` nodes, conditional routing, `MAX_ITERATIONS=3` hard cap) with `score_match`/`draft_bullet`/`search_job_board`/`finish` tools over Groq `openai/gpt-oss-120b` (see fix note below); writes to `JobMatch.explanation`
+- [x] Wired into `orchestrator.run_fetch_and_match()` via `_run_agentic_stage()` — runs after Stage 1 persist, before FetchRun finalization; every stage degrades gracefully (missing API keys, empty shortlist, agent errors) rather than failing the run
+- [x] `docs/02-architecture.md`, `docs/modules.md`, `docs/03-agents-flows.md` updated to match
+- [x] Fixed (2026-08-31), verified against real keys for the first time: both
+      hardcoded model names had gone stale since this was written —
+      `text-embedding-004` 404'd (Gemini's `models.list()` no longer offers
+      it; replaced with `gemini-embedding-001`) and `llama-3.3-70b-versatile`
+      404'd on Groq (deprecated/removed from their catalog; replaced with
+      `openai/gpt-oss-120b`, confirmed to support the tool-calling loop).
+      Real run against 3 live profiles (SQLite, not Postgres — this repo's
+      actual default, not the Docker/Postgres setup this note originally
+      assumed) confirmed genuine LLM scoring end-to-end: `agentic_scored: 2`,
+      `agentic_stopped_reason: max_iterations`, real rationale text in
+      `JobMatch.explanation`. Model names may need revisiting again in the
+      future as these providers continue to churn their catalogs.
+- [x] Fixed (2026-08-31): `run_metrics.log_summary()`'s box-drawing "─"
+      characters crashed with `UnicodeEncodeError` on Windows consoles whose
+      default stdout encoding can't represent them (surfaced once a real run
+      actually reached this code path) — replaced with plain ASCII `-`.
+- [ ] Frontend: `JobDialog` doesn't render `JobMatch.explanation` yet — the agentic rationale is persisted but not surfaced in the UI (tracked under §8 Future evolution "Score explanations in UI" in `docs/02-architecture.md`)
+- [ ] Backfill: existing `job_postings`/`profiles` rows have `embedding=NULL` until they're touched by a new fetch/upload — no backfill migration written; fine since Stage 2 degrades gracefully, but worth a one-off script if re-ranking quality on old data matters later
 
 ## 15. Next recommended tasks
 

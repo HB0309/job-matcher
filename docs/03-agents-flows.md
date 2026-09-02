@@ -81,9 +81,91 @@ POST /fetch-jobs {profile_id, connectors[], max_results_per_target}
           - location_score: 1.0 if remote/null, 0.5 if US, 0.0 otherwise
           - overall = 0.35 * skills + 0.50 * level + 0.15 * location
       11. Persist JobMatch rows (with fetch_run_id)
+      11b. Agentic matching funnel (Stage 2 + 3 — see below)
       12. Update FetchRun status + counts → commit
   → FetchJobsResponse {fetch_run_id, total_jobs_matched, status, ...}
 ```
+
+### 3.2b Agentic matching funnel (added 2026-08-07)
+
+Runs after Stage 1 (the zero-cost heuristic `score_jobs` above) persists this
+run's `JobMatch` rows. Purpose: get a genuinely LLM-reasoned score + rationale
+onto the strongest matches (this is what makes it accurate to say postings are
+"ranked against a resume with LLMs" — previously only the tailoring step used
+an LLM, matching itself was pure heuristic). Cost is bounded by construction —
+each stage narrows the pool before the next, more expensive stage runs:
+
+```
+Stage 1 (existing, zero cost): score_jobs() over ALL new postings
+  → rank by overall_score, keep top 20 (_STAGE1_TOP_N)
+
+Stage 2 (embedder.py, cheap): semantic re-rank via cached embeddings
+  - Each JobPosting.embedding computed ONCE at ingestion (persist loop, step 9),
+    cached forever — never recomputed for future runs/profiles against the
+    same posting.
+  - Profile.embedding computed once per resume upload (or lazily on first
+    match run if missing), cached on the profile row.
+  - Cosine-similarity re-rank the Stage 1 top-20 down to a shortlist of 8
+    (_SHORTLIST_SIZE). No pgvector — embeddings are plain JSON float arrays,
+    compared in-process with numpy (see embedder.py docstring for why).
+  - Degrades gracefully to "first 8 of the Stage 1 order" if no
+    GEMINI_API_KEY is configured — never blocks the run.
+
+Stage 3 (agent.py, bounded LLM cost): LangGraph tool-calling agent over the
+  8-posting shortlist ONLY — never the full fetched pool.
+  - Tools: score_match(job_id) [reasoned 0-1 score + rationale via Groq
+    openai/gpt-oss-120b], draft_bullet(job_id) [one-sentence fit
+    rationale, only after score_match], search_job_board(query) [re-filters
+    postings already fetched this run that fell outside the Stage 1 top-20 —
+    NOT a new live connector call — lets the agent broaden its view if the
+    shortlist looks weak], finish.
+  - Graph: agent (calls the model) <-> tools (executes the requested calls),
+    looping until the model calls finish OR MAX_ITERATIONS=3 is hit
+    (hard cost ceiling even if the model never finishes on its own).
+  - Result written to JobMatch.explanation as
+    "[agentic] score=0.NN — <rationale>\n<draft bullet>" for every job_id the
+    agent actually scored (not every shortlist entry — the agent decides
+    which postings are worth scoring, that's the point).
+  - Degrades gracefully to Stage 1 heuristic scores only if GROQ_API_KEY is
+    missing or the shortlist is empty (`stopped_reason` = "no_api_key").
+
+Worst case per run: ~8 shortlist postings, bounded by 3 agent-loop iterations
+— a small, predictable number of LLM calls, independent of how many postings
+(100+) were actually fetched.
+```
+
+### 3.2c Multi-profile fetch (added 2026-08-31)
+
+`POST /fetch-jobs/all` runs 3.2 (+ 3.2b per profile) for every profile a user
+owns in one call, via `orchestrator.run_fetch_and_match_for_profiles()`:
+
+```
+POST /fetch-jobs/all {connectors[], max_results_per_target}
+  → orchestrator.run_fetch_and_match_for_profiles()
+      1. Load every profile owned by the authenticated user
+      2. Load enabled SourceTargets ONCE (shared — global, not profile-scoped)
+      3. group_key = tuple(sorted(profile.preferred_titles))
+         → profiles with identical title sets share one fetch pass
+      4. Per unique group: create a FetchRun (+ FetchRunTarget stubs) for
+         EVERY profile in that group, then run steps 4-7 of 3.2 ONCE for the
+         group (parallel fetch, normalize, security filter) — the group's
+         single fetch outcome is mirrored onto every profile's own
+         FetchRunTarget rows (cheap bookkeeping duplication; the actual HTTP
+         calls only happen once per group)
+      5. Concatenate every group's normalized+filtered batch, call dedupe()
+         ONCE for the whole run → one shared new_jobs pool, one JobPosting
+         persisted per unique posting (steps 8-9 of 3.2, run once total)
+      6. Per profile (not per group): apply that profile's OWN
+         extract_domain_keywords/passes_title_filter over the full combined
+         new_jobs pool (catches cross-group overlap correctly), score_jobs(),
+         persist JobMatch rows against that profile's own FetchRun, run 3.2b
+         scoped to that profile only
+      7. Finalise each profile's own FetchRun status + counts → commit once
+  → FetchJobsResponse[] — one entry per profile, same shape as 3.2's response
+```
+
+The single-profile flow in 3.2/3.2b is unchanged and still used by the
+scheduler (`workers/scheduler.py`) for auto-fetch.
 
 ### 3.3 Job list query
 

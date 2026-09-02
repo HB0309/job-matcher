@@ -1,7 +1,12 @@
+import json
+import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _CURRENT_YEAR = date.today().year
 _CURRENT_MONTH = date.today().month
@@ -319,3 +324,85 @@ def parse_resume(file_path: str, preferred_titles: list[str] | None = None) -> P
         years_experience=extract_years_experience(text),
         skills=extract_skills(text),
     )
+
+
+# ---------------------------------------------------------------------------
+# LLM-structured parsing (Stage 0 of agentic matching, see docs/03-agents-flows.md).
+#
+# Runs ONCE per resume upload, not per job match — cost is negligible even with
+# a capable model. Extracts richer structured data than the regex extractors
+# above (which stay as-is and remain the source of truth for headline/
+# years_experience/skills). On any failure this returns None and the caller
+# keeps the regex-only profile — LLM enrichment is best-effort, never blocking.
+# ---------------------------------------------------------------------------
+
+_RESUME_LLM_PROMPT = """You are extracting structured data from a resume for a job-matching system.
+Read the resume text below and return ONLY valid JSON, no markdown fences, no explanation, in this exact structure:
+
+{{
+  "skills": ["skill1", "skill2", ...],
+  "experience_bullets": ["concise accomplishment 1", "concise accomplishment 2", ...],
+  "seniority": "one of: new_grad, entry, junior, mid, senior, staff, principal",
+  "domain_keywords": ["keyword1", "keyword2", ...]
+}}
+
+Rules:
+- "skills": every real technical skill/tool/technology actually used, lowercase, deduplicated.
+- "experience_bullets": rewrite each real accomplishment from the resume as one short, factual sentence (do not invent anything not in the text). Include every distinct accomplishment across all jobs/projects, not just the most recent.
+- "seniority": your best estimate of the candidate's current level based on years of experience and role titles.
+- "domain_keywords": the specific problem domains/industries this person's experience is actually in (e.g. "cybersecurity", "backend", "machine learning", "distributed systems") — not generic words like "software" or "engineer".
+
+RESUME TEXT:
+{text}
+"""
+
+
+def parse_resume_llm(text: str) -> dict | None:
+    """Structured-output LLM parse of resume text. Returns None on any failure
+    (missing API key, rate limit exhausted, malformed response) — caller must
+    treat this as optional enrichment, not a hard dependency."""
+    from app.config import settings
+
+    if not settings.gemini_api_key:
+        logger.info("resume_parser: no gemini_api_key configured, skipping LLM parse")
+        return None
+
+    from google import genai
+
+    client = genai.Client(api_key=settings.gemini_api_key)
+    prompt = _RESUME_LLM_PROMPT.format(text=text[:12000])
+
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+            raw = response.text.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            data = json.loads(raw)
+            # Minimal shape validation — malformed shape is treated like a failure.
+            has_skills = isinstance(data.get("skills"), list)
+            has_bullets = isinstance(data.get("experience_bullets"), list)
+            if not has_skills or not has_bullets:
+                logger.warning("resume_parser: LLM response missing expected keys, discarding")
+                return None
+            return data
+        except Exception as exc:
+            last_exc = exc
+            s = str(exc)
+            if "429" in s or "RESOURCE_EXHAUSTED" in s:
+                if attempt == 2:
+                    break
+                wait = 10 * (2 ** attempt)
+                logger.warning(
+                    "resume_parser: Gemini rate limit, retry in %ds (attempt %d/2)",
+                    wait, attempt + 1,
+                )
+                time.sleep(wait)
+                continue
+            break  # non-rate-limit error — don't retry, just fall back
+
+    logger.warning(
+        "resume_parser: LLM parse failed (%s) — falling back to regex-only profile", last_exc
+    )
+    return None

@@ -53,30 +53,167 @@ connector-by-connector notes.
 
 ## Getting started
 
-**Backend**
+Full step-by-step setup, from a clean clone to a working app in your browser.
+
+### Prerequisites
+
+- **Python 3.11+**
+- **Node.js 18+** (and npm)
+- **git**
+
+No Docker or database server install is required for local dev — the default
+config uses SQLite. Postgres is supported too (see [Database](#database) below)
+but isn't required to get started.
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/HB0309/job-matcher.git
+cd job-matcher
+```
+
+### 2. Backend setup
 
 ```bash
 cd backend
+python -m venv .venv
+
+# Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+# macOS/Linux:
+source .venv/bin/activate
+
 pip install -e ".[dev]"
-cp ../.env.example .env   # fill in DATABASE_URL, CORS_ORIGINS, etc.
+playwright install chromium   # only needed for the Dice connector
+```
+
+Create `backend/.env` (copy from the example at the repo root):
+
+```bash
+cp ../.env.example .env
+```
+
+`.env` defaults to SQLite and needs no editing to run locally. Open it if you
+want to swap to Postgres or add optional connector/AI API keys — see
+[Configuration](#configuration) below.
+
+**Apply the database migrations before starting the server — this step is
+easy to miss and the app will 500 on resume upload without it:**
+
+```bash
 alembic upgrade head
+```
+
+Now start the backend:
+
+```bash
 uvicorn app.main:app --reload --port 8000
 ```
 
-**Frontend**
+Leave this running. Confirm it's up by opening `http://127.0.0.1:8000/docs`
+in a browser — you should see the FastAPI interactive docs.
+
+### 3. Frontend setup
+
+In a second terminal:
 
 ```bash
 cd frontend
 npm install
-cp .env.example .env.local   # NEXT_PUBLIC_API_URL=http://localhost:8000
+cp .env.example .env.local
+```
+
+Open `frontend/.env.local` and check it reads:
+
+```
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+```
+
+**Use `127.0.0.1`, not `localhost`.** uvicorn binds to `127.0.0.1` only by
+default; if the browser resolves `localhost` to its IPv6 address (`::1`)
+first — common on Windows — every API call fails with a generic
+`TypeError: Failed to fetch` in the browser console, which is confusing to
+debug from that error alone.
+
+Now start the frontend:
+
+```bash
 npm run dev
 ```
 
-Or start both at once from the repo root with `./start.ps1` (Windows) /
-`./dev.ps1`.
+The frontend runs at `http://localhost:4000` (pinned in
+`frontend/package.json`'s `dev` script — not the Next.js default `:3000`)
+and expects the backend at `:8000`.
 
-The frontend runs at `http://localhost:3000` (or `:4000` via `npm run dev`,
-see `frontend/package.json`) and expects the backend at `:8000`.
+### 4. Or start both at once
+
+From the repo root, on Windows:
+
+```powershell
+./start.ps1   # opens two new PowerShell windows, one per server
+# or
+./dev.ps1     # runs both in one terminal, auto-restarts either on crash
+```
+
+These skip the one-time setup above (venv creation, `pip install`,
+`npm install`, `alembic upgrade head`) — run steps 2 and 3 at least once
+first.
+
+### 5. First run in the browser
+
+1. Open `http://localhost:4000`.
+2. **Register** a new account (email + password — this is a local account,
+   not tied to any external service).
+3. **Upload a resume** (PDF or DOCX) to create your first profile. Set target
+   job titles (e.g. "Software Engineer, Backend Engineer") and preferred
+   levels — these drive both the connector search query and the title filter
+   that decides which fetched postings are relevant to you.
+4. Optionally repeat step 3 to add more profiles (e.g. one per job title
+   you're targeting) — "Fetch Jobs" always runs for every profile you have in
+   one click and shows one combined list tagging which profile(s) matched
+   each posting.
+5. Under **2 — Fetch Jobs**, pick which connectors to use (RemoteOK, The
+   Muse, Remotive, and JobRight need no API key; Adzuna and LinkedIn need
+   credentials — see below) and click **Fetch Jobs**.
+6. Browse, filter, and save/mark-applied on the results in the **Jobs** tab.
+
+### Configuration
+
+All settings live in `backend/.env` (see `backend/app/config.py` for the full
+list with defaults). Nothing beyond the defaults is required to run the app —
+these unlock optional connectors and AI features:
+
+| Variable | Unlocks | Get it from |
+|---|---|---|
+| `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | Adzuna connector | Free at [developer.adzuna.com](https://developer.adzuna.com) |
+| `LINKEDIN_EMAIL` / `LINKEDIN_PASSWORD` | LinkedIn connector (unofficial API — slow, ~4-6 min/run, use a throwaway/secondary account) | Your own LinkedIn login |
+| `GEMINI_API_KEY` | AI resume tailoring (Gemini reads your resume + a job description and proposes edits) and semantic job re-ranking | [Google AI Studio](https://aistudio.google.com/) |
+| `GROQ_API_KEY` | LaTeX resume editing during tailoring, and the agentic job-matching re-rank/rationale step | [console.groq.com](https://console.groq.com) |
+| `HF_API_TOKEN` | Optional LLM-backed application-draft prose (`DRAFTING_PROVIDER=huggingface`); deterministic drafting is the default and needs no key | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+
+RemoteOK, The Muse, Remotive, and JobRight need no credentials — they're
+public APIs. Resume PDF compilation (for tailored resumes) additionally
+requires [tectonic](https://tectonic-typesetting.github.io/) on your `PATH`.
+
+### Database
+
+Local dev defaults to SQLite (`sqlite:///./job_matcher.db`, zero setup). To
+use Postgres instead, set `DATABASE_URL=postgresql://user:password@localhost:5432/job_matcher`
+in `backend/.env` and re-run `alembic upgrade head` against it before
+starting the server.
+
+### Troubleshooting
+
+- **"Failed to fetch" in the browser on every API call** — see the
+  `127.0.0.1` vs `localhost` note in step 3 above.
+- **500 error uploading a resume, `no column named ...` in the server log**
+  — you skipped `alembic upgrade head`; run it against whichever database
+  your `.env` points at, then restart the backend.
+- **Port 8000 or 4000 already in use / stale process from a previous run** —
+  on Windows, `uvicorn --reload` spawns a child worker process that can
+  outlive the parent if killed incorrectly; find and stop the real listener
+  with `Get-NetTCPConnection -LocalPort 8000` (PowerShell) rather than
+  assuming the PID you started it with is still the one holding the port.
 
 ## Project layout
 
