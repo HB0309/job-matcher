@@ -18,8 +18,6 @@ const CONNECTOR_COLORS: Record<string, string> = {
   themuse: "bg-pink-100 text-pink-700",
   adzuna: "bg-yellow-100 text-yellow-700",
   jobright: "bg-indigo-100 text-indigo-700",
-  hiringcafe: "bg-lime-100 text-lime-700",
-  indeed: "bg-blue-100 text-blue-700",
   dice: "bg-red-100 text-red-700",
   remotive: "bg-purple-100 text-purple-700",
 };
@@ -68,6 +66,21 @@ function ScoreBar({ value, label, note, chips }: {
 function buildSkillsNote(ex: ScoreExplanation): string {
   if (ex.skill_count_job === 0) return "no skill tags on this job";
   return `${ex.matched_skills.length} / ${ex.skill_count_job} skills matched`;
+}
+
+// Parses orchestrator.py's `_run_agentic_stage` explanation format:
+// "[agentic] score=0.NN — <rationale>\n<draft bullet>" (draft line optional).
+function parseAgenticExplanation(raw: string): { score: number | null; rationale: string; draft: string | null } {
+  const [firstLine, ...rest] = raw.split("\n");
+  const match = firstLine.match(/^\[agentic\]\s*score=([\d.]+)\s*—\s*(.*)$/);
+  if (!match) {
+    return { score: null, rationale: raw, draft: null };
+  }
+  return {
+    score: Number(match[1]),
+    rationale: match[2],
+    draft: rest.length > 0 ? rest.join("\n") : null,
+  };
 }
 
 function JobDialog({
@@ -180,6 +193,32 @@ function JobDialog({
                   />
                 </div>
               </div>
+
+              {/* Agentic (LLM-reasoned) assessment — only present for postings
+                  the bounded Stage 3 agent actually scored, not every job */}
+              {detail.agentic_explanation && (() => {
+                const parsed = parseAgenticExplanation(detail.agentic_explanation);
+                return (
+                  <div>
+                    <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      AI assessment
+                      {parsed.score != null && (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 normal-case tracking-normal">
+                          {Math.round(parsed.score * 100)}%
+                        </span>
+                      )}
+                    </p>
+                    <div className="bg-indigo-50 border border-indigo-100 rounded-lg p-4 space-y-2">
+                      <p className="text-sm text-gray-700 leading-relaxed">{parsed.rationale}</p>
+                      {parsed.draft && (
+                        <p className="text-sm text-gray-600 italic border-t border-indigo-100 pt-2">
+                          {parsed.draft}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Keywords / tags */}
               {detail.tags && detail.tags.length > 0 && (

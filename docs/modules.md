@@ -12,8 +12,6 @@
 | `connectors/jobright.py` | JobRight Next.js internal data API; full descriptions |
 | `connectors/remotive.py` | Remotive public REST API; remote tech jobs; full HTML descriptions stripped to text |
 | `connectors/dice.py` | Playwright headless Chromium scraper; DOM extraction from rendered SPA; stealth mode to bypass bot detection |
-| `connectors/hiringcafe.py` | Hiring Café (currently 403 blocked) |
-| `connectors/indeed.py` | Indeed (RSS feed gone, currently unavailable) |
 | `registry.py` | Resolves connector name → connector instance at runtime |
 | `target_loader.py` | Loads enabled `SourceTarget` rows from DB, filtered by connector name or target IDs |
 | `normalizer.py` | Maps `RawJobPosting` → `NormalizedJob`; detects `normalized_level`; extracts skill tags from description |

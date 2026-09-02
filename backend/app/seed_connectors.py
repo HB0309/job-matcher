@@ -21,13 +21,6 @@ CONNECTORS = [
         "notes": "JobRight public Next.js API — no auth, search-based.",
     },
     {
-        "name": "hiringcafe",
-        "display_name": "Hiring Café",
-        "enabled": True,
-        "auth_mode": "public",
-        "notes": "hiring.cafe public Next.js SSR — no auth, search-based.",
-    },
-    {
         "name": "themuse",
         "display_name": "The Muse",
         "enabled": True,
@@ -40,13 +33,6 @@ CONNECTORS = [
         "enabled": True,
         "auth_mode": "api_key",
         "notes": "Adzuna aggregator API — free key at developer.adzuna.com. Set ADZUNA_APP_ID + ADZUNA_APP_KEY in .env.",
-    },
-    {
-        "name": "indeed",
-        "display_name": "Indeed",
-        "enabled": True,
-        "auth_mode": "public",
-        "notes": "Public RSS feed — no auth. Search-based across all companies.",
     },
     {
         "name": "dice",

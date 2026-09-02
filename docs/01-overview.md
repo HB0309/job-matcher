@@ -43,10 +43,12 @@ ATS (company career page) connectors were removed. The system is now **aggregato
 | **Remotive** | Aggregator | None | Remote tech jobs. Full HTML descriptions. |
 | **Dice** | Playwright scraper | None | Headless Chromium renders SPA. Slower (~15–30s/title). |
 | **LinkedIn** | Social | Email + Password | Authenticated Voyager API. Full descriptions, real apply URLs. ~4–6 min/run. |
-| **HiringCafe** | Aggregator | None | Currently 403 blocked. |
-| **Indeed** | Aggregator | None | RSS feed gone, currently unavailable. |
 
-### Total: 8 active connectors, 9 virtual targets (one per connector + one LinkedIn target)
+Removed (2026-09-02): **HiringCafe** (Cloudflare-blocked — bot protection, not worth
+fighting) and **Indeed** (Cloudflare bot blocker on their RSS/search surface too). Both
+were permanently broken with no realistic fix; deleted rather than left as dead code.
+
+### Total: 6 active connectors, 7 virtual targets (one per connector + one LinkedIn target)
 
 ## 5. Scoring model
 
@@ -98,14 +100,12 @@ An **Application Intelligence Layer** is implemented and wraps the Apply tab:
 
 - Dice is slower than other connectors (Playwright browser launch per title search); descriptions fetched via httpx SSR pages (capped at first 50 per run)
 - Adzuna descriptions are capped at 500 chars by their API — no workaround
-- HiringCafe and Indeed are currently blocked/broken
 - LinkedIn takes 4–6 minutes per run at 200 jobs
 - Coverage depends on what boards have listings for your search terms
 - Re-fetching jobs does not backfill descriptions on existing rows (deduper skips exact matches)
 
 ## 11. Future directions
 
-- Fix HiringCafe (Cloudflare bypass) and Indeed (find working data source)
 - Add score explanations in UI ("why 72%?")
 - Improve skill extraction with canonical taxonomy
 - Add multi-user support

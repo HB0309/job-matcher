@@ -19,7 +19,6 @@ const CONNECTOR_COLORS: Record<string, string> = {
   themuse: "bg-pink-100 text-pink-700",
   adzuna: "bg-yellow-100 text-yellow-700",
   jobright: "bg-indigo-100 text-indigo-700",
-  hiringcafe: "bg-lime-100 text-lime-700",
 };
 
 const CTA_STYLE: Record<IntentKind, string> = {

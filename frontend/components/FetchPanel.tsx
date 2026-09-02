@@ -6,7 +6,7 @@ import type { FetchJobsResponse, ProfileResponse } from "@/types";
 const CONNECTOR_GROUPS = [
   {
     label: "Aggregators",
-    connectors: ["adzuna", "jobright", "hiringcafe", "remoteok", "themuse", "indeed", "remotive", "dice"],
+    connectors: ["adzuna", "jobright", "remoteok", "themuse", "remotive", "dice"],
   },
   {
     label: "Social",
@@ -21,8 +21,6 @@ const CONNECTOR_LABELS: Record<string, string> = {
   themuse: "The Muse",
   adzuna: "Adzuna",
   jobright: "JobRight",
-  hiringcafe: "Hiring Café",
-  indeed: "Indeed",
   remotive: "Remotive",
   dice: "Dice",
   linkedin: "LinkedIn",
@@ -33,16 +31,12 @@ const CONNECTOR_COLORS: Record<string, string> = {
   themuse: "bg-pink-100 text-pink-700 border-pink-200",
   adzuna: "bg-yellow-100 text-yellow-700 border-yellow-200",
   jobright: "bg-indigo-100 text-indigo-700 border-indigo-200",
-  hiringcafe: "bg-lime-100 text-lime-700 border-lime-200",
-  indeed: "bg-blue-100 text-blue-700 border-blue-200",
   remotive: "bg-purple-100 text-purple-700 border-purple-200",
   dice: "bg-red-100 text-red-700 border-red-200",
   linkedin: "bg-sky-100 text-sky-700 border-sky-200",
 };
 
 const CONNECTOR_NOTES: Record<string, string> = {
-  hiringcafe: "403 blocked",
-  indeed: "feed gone",
   dice: "slower (browser)",
   linkedin: "slow (4–6 min)",
 };

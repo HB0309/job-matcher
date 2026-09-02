@@ -22,8 +22,9 @@ All connectors are aggregator/social — no ATS (company career page) connectors
 | `jobright` | Next.js internal data API | None | ✅ Working |
 | `remotive` | Public REST API | None | ✅ Working (full descriptions) |
 | `dice` | Playwright headless scraper | None | ✅ Working (slower) |
-| `hiringcafe` | Next.js SSR | None | ❌ 403 blocked |
-| `indeed` | RSS feed | None | ❌ Feed gone |
+
+Removed (2026-09-02): `hiringcafe` (Cloudflare-blocked) and `indeed` (Cloudflare bot
+blocker) — both permanently broken, deleted rather than kept as dead code.
 
 ## 3. Core data flow
 
@@ -244,10 +245,8 @@ Sort order in `GET /jobs`: `overall_score DESC, job_match.created_at DESC, poste
 - `tectonic.exe` (bundled at `backend/resume_latex/tectonic.exe`) — self-contained LaTeX compiler for PDF generation
 
 ## 8. Future evolution
-
-- Fix HiringCafe (Cloudflare bypass) and Indeed
-- Score explanations in UI (agentic scores now populate `JobMatch.explanation`, see §3.2b — still needs a frontend surface, `JobDialog` currently doesn't render it)
 - ~~Embeddings/semantic ranking~~ — done 2026-08-07, see §3.2b (Stage 2)
+- ~~Score explanations in UI~~ — done 2026-09-02, `JobDialog` renders `JobMatch.explanation` when the agentic stage scored that posting
 - Multi-user isolation
 - Notifications
 - `apply_runs` table + browser-extension apply flow (Phase 5D/5E)

@@ -176,8 +176,6 @@ All endpoints (except `/auth/*`) require a valid Bearer JWT token in the `Author
 | `remotive` | Public REST API | Remote tech jobs; full descriptions |
 | `dice` | Playwright scraper | Headless Chromium; slower (~15–30s/title) |
 | `linkedin` | Voyager API | Requires `LINKEDIN_USERNAME` + `LINKEDIN_PASSWORD`; ~4–6 min/run |
-| `hiringcafe` | Next.js SSR | 403 blocked — do not use |
-| `indeed` | RSS | Feed gone — do not use |
 
 **Response 200**
 ```json
@@ -404,9 +402,7 @@ Same fields as `POST /fetch-jobs`, minus `profile_id` — it always targets ever
     {"name": "themuse", "display_name": "The Muse", "enabled": true},
     {"name": "remotive", "display_name": "Remotive", "enabled": true},
     {"name": "dice", "display_name": "Dice", "enabled": true},
-    {"name": "linkedin", "display_name": "LinkedIn", "enabled": true},
-    {"name": "hiringcafe", "display_name": "Hiring Café", "enabled": true},
-    {"name": "indeed", "display_name": "Indeed", "enabled": true}
+    {"name": "linkedin", "display_name": "LinkedIn", "enabled": true}
   ]
 }
 ```

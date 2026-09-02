@@ -82,8 +82,9 @@ ATS connectors require maintaining per-company slugs, break on schema changes, g
 | `remotive` | ✅ Working | Full descriptions |
 | `dice` | ✅ Working | Playwright; ~15–30s/title |
 | `linkedin` | ✅ Working | ~4–6 min/run |
-| `hiringcafe` | ❌ 403 blocked | Cloudflare |
-| `indeed` | ❌ Feed gone | No working data source |
+
+`hiringcafe` and `indeed` were removed entirely on 2026-09-02 (Cloudflare-blocked,
+no realistic fix) — see §"Removed connectors" below.
 
 ---
 
@@ -117,10 +118,10 @@ ATS connectors require maintaining per-company slugs, break on schema changes, g
 
 ## 5. Phase 4 – Connector improvements and coverage
 
-**Goal:** Fix blocked connectors, improve Dice reliability, widen job coverage.
+**Goal:** Improve Dice reliability, widen job coverage.
 
-- [ ] Fix HiringCafe — Cloudflare bypass (cloudscraper or Playwright with stealth)
-- [ ] Fix Indeed — find working data source (SerpAPI, unofficial API, or scraper)
+- [x] HiringCafe and Indeed removed entirely (2026-09-02) rather than fixed —
+      both Cloudflare-blocked with no realistic bypass worth the effort
 - [ ] Improve Dice scraper reliability — currently dependent on DOM structure stability
 - [ ] Add score explanations in UI ("why 72%?")
 - [ ] Improve skill extraction with canonical taxonomy (normalize synonyms: `k8s ↔ kubernetes`)
